@@ -12,3 +12,6 @@ wheels/
 # Secrets
 .env
 *.pem
+
+# Eval run outputs
+evals/results/

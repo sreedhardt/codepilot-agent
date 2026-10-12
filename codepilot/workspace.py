@@ -13,6 +13,7 @@ get the guarded shell; the Orchestrator never sees the repository at all.
 
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -73,6 +74,16 @@ class TaskWorkspace:
     def tester_backend(self) -> CompositeBackend:
         """Same sandbox and shell as the Coder, but only test files are writable."""
         return CompositeBackend(self.shell.restricted(["/tests/**"]), self._shared_routes())
+
+    def run_tests(self) -> tuple[bool, str]:
+        """Run the full suite in the sandbox (trusted path, not an agent command). Returns (passed, output tail)."""
+        result = subprocess.run(
+            ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"], cwd=self.sandbox,
+            env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, timeout=600,
+        )
+        tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
+        return result.returncode == 0, tail
 
     def write(self, name: str, content: str) -> str:
         (self.working / name).write_text(content)

@@ -9,7 +9,9 @@ subagent of the Coder and shares its sandbox. Agents pass file paths through
 
 import logging
 import os
+import json
 import subprocess
+from dataclasses import dataclass
 from typing import Literal
 
 from deepagents import CompiledSubAgent, create_deep_agent
@@ -21,6 +23,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from codepilot import github_ops
+from codepilot.classifier import TaskType
 from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
 from codepilot.skills import Skill
@@ -36,7 +40,7 @@ PROVIDER_KWARGS = {
     "google_genai": {},
     "ollama": {},
 }
-MODEL_CALL_LIMITS = {Role.ORCHESTRATOR: 25, Role.REPO_EXPLORER: 15, Role.CODER: 40, Role.TESTER: 20}
+MODEL_CALL_LIMITS = {Role.ORCHESTRATOR: 25, Role.REPO_EXPLORER: 15, Role.CODER: 40, Role.TESTER: 20, Role.PR: 8}
 
 
 def _model(role: Role) -> BaseChatModel:
@@ -82,8 +86,12 @@ Start by reading /working/task.md (the issue, its task type and the selected ski
 2. Delegate to `repo_explorer` with the task tool: describe what to look for. It writes /working/relevant_files.md.
 3. Delegate to `coder` with the task tool. Your instruction must contain the issue summary, the skill name, and
    the path /working/relevant_files.md. Pass file paths only; never paste file contents into a delegation.
-4. When the coder reports back, read /working/test_report.md and /working/proposed_diff.txt and end with one line:
-   `VERDICT: RESOLVED - <one-sentence summary>` or `VERDICT: FAILED - <reason>`.
+4. When the coder reports back, read /working/test_report.md and /working/proposed_diff.txt.
+5. Only if the test report says PASS and the diff is not empty, delegate to `pr_agent` with the task tool to open
+   the pull request. Do not ask it to resolve conflicts or retry if it reports FAILED.
+6. Read /working/pr_result.md: it is the authoritative outcome; never describe a PR as opened unless its first
+   line starts with PR_OPENED. End with one plain-text line, no markdown:
+   `VERDICT: RESOLVED - <first line of pr_result.md>` or `VERDICT: FAILED - <reason>`.
 Mark todos complete as you go."""
 
 EXPLORER_PROMPT = """You are the Repo Explorer. Find the repository files relevant to a task, without editing anything.
@@ -122,6 +130,92 @@ TESTER_PROMPT = """You are the Test Agent. You verify a change the Coder made, i
 4. Write /working/test_report.md: the command, pass/fail counts, and for each failure the test name and a
    one-line cause taken from the output.
 5. Reply starting with `PASS` or `FAIL`, then the counts and failures."""
+
+
+PR_PROMPT = """You are the PR Agent. You open the pull request for a verified change; you do not change code.
+
+1. Read /working/task.md, /working/test_report.md and /working/proposed_diff.txt.
+2. Call open_pull_request exactly once with:
+   - summary: one imperative line under 70 characters describing what the change does
+   - what_changed: 1-3 short bullets on what changed, naming files or functions
+   - why: 1-2 short bullets on why; do not repeat the issue number (CodePilot adds "Closes #n")
+   - approach: 2-4 sentences on the root cause and how the change addresses it
+3. Reply with the tool's result verbatim and nothing else. If it starts with FAILED, do not call it again."""
+
+
+@dataclass
+class TaskContext:
+    """Issue metadata the PR Agent needs; filled by the driver, never by an agent."""
+
+    issue_number: int
+    title: str
+    url: str
+    reporter: str | None
+    task_type: TaskType
+
+
+def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
+    @tool
+    def open_pull_request(summary: str, what_changed: list[str], why: list[str], approach: str) -> str:
+        """Commit every sandbox change as one commit on a new branch and open a PR to the default branch.
+
+        The branch name, commit format, PR title, body sections and labels are fixed by CodePilot.
+        """
+        # Idempotent by construction: a second call (models sometimes repeat tool calls) must never open a second PR.
+        previous = ws.working / "pr_result.md"
+        if previous.exists():
+            return "ALREADY CALLED, nothing done. The recorded outcome is: " + previous.read_text().strip()
+        result = _open_pull_request(summary, what_changed, why, approach)
+        ws.write("pr_result.md", result + "\n")
+        return result
+
+    def _open_pull_request(summary: str, what_changed: list[str], why: list[str], approach: str) -> str:
+        changes = github_ops.sandbox_changes(ws.sandbox)
+        if not changes:
+            return "FAILED: the sandbox has no changes; nothing to open a PR for."
+        passed, test_output = ws.run_tests()
+        if not passed:
+            return f"FAILED: the test suite does not pass, so no PR was opened.\n{test_output}"
+
+        plan = github_ops.PullRequestPlan(
+            branch=github_ops.branch_name(ctx.issue_number, ctx.title),
+            commit_message=github_ops.commit_message(ctx.task_type, ctx.issue_number, summary, what_changed, why),
+            title=f"[CodePilot] {ctx.title}",
+            body=github_ops.pr_body(ctx.issue_number, ctx.title, ctx.url, summary, approach, changes, test_output),
+            base_sha=github_ops.sandbox_head(ws.sandbox),
+            changes=changes,
+        )
+        ws.write("pr_plan.md", f"# Branch\n{plan.branch}\n\n# Commit message\n{plan.commit_message}\n\n"
+                                f"# Title\n{plan.title}\n\n# Labels\n{', '.join(github_ops.PR_LABELS)}\n\n"
+                                f"# Body\n{plan.body}\n")
+        if not open_pr:
+            return "DRY RUN: PR not opened (run with --open-pr). Full preview written to /working/pr_plan.md."
+        try:
+            url = github_ops.open_pull_request(github_ops.target_repository(), ws.sandbox, plan, ctx.reporter)
+        except github_ops.MergeConflictError as e:
+            return f"FAILED: merge conflict, PR not opened and not resolved automatically: {e}"
+        ws.write("pr.json", json.dumps({"url": url, "branch": plan.branch, "title": plan.title}))
+        return f"PR_OPENED {url}"
+
+    return open_pull_request
+
+
+def build_pr_agent(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool) -> CompiledSubAgent:
+    agent = create_deep_agent(
+        model=_model(Role.PR),
+        tools=[make_pr_tool(ws, ctx, open_pr)],
+        system_prompt=PR_PROMPT,
+        backend=ws.orchestrator_backend(),
+        permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+        middleware=_middleware(Role.PR),
+        name="pr_agent",
+    )
+    return CompiledSubAgent(
+        name="pr_agent",
+        description="Opens the pull request for a verified change: one structured commit on a codepilot/ branch, "
+                    "labelled PR to the default branch. Use only after the Test Agent reports PASS.",
+        runnable=agent,
+    )
 
 
 def build_explorer(ws: TaskWorkspace, repo_map: RepoMap, index: EmbeddingIndex | None) -> CompiledSubAgent:
@@ -207,15 +301,17 @@ def build_orchestrator(
     ws: TaskWorkspace,
     repo_map: RepoMap,
     skill: Skill,
+    ctx: TaskContext,
     index: EmbeddingIndex | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    open_pr: bool = False,
 ):
     skill.install(ws.skills)
     return create_deep_agent(
         model=_model(Role.ORCHESTRATOR),
         system_prompt=ORCHESTRATOR_PROMPT,
         backend=ws.orchestrator_backend(),
-        subagents=[build_explorer(ws, repo_map, index), build_coder(ws)],
+        subagents=[build_explorer(ws, repo_map, index), build_coder(ws), build_pr_agent(ws, ctx, open_pr)],
         middleware=_middleware(Role.ORCHESTRATOR),
         checkpointer=checkpointer,
         name="orchestrator",

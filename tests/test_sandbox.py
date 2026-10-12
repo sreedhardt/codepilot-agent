@@ -79,3 +79,23 @@ def test_backend_runs_allowed_commands_in_sandbox(tmp_path):
 
     assert result.exit_code == 0
     assert result.output.strip() == "hi"
+
+
+@pytest.mark.parametrize("path", ["/.env", "/config/.env.prod", "/deploy/server.pem", "/app/aws_credentials.json", "/x.key"])
+def test_protected_files_are_never_writable(tmp_path, path):
+    backend = GuardedShellBackend(tmp_path)
+    assert "BLOCKED" in backend.write(path, "x").error
+    assert not (tmp_path / path.lstrip("/")).exists()
+
+
+def test_writable_paths_limit_a_restricted_backend(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "code.py").write_text("a = 1\n")
+    coder = GuardedShellBackend(tmp_path)
+    tester = coder.restricted(["/tests/**"])
+
+    assert tester.write("/tests/test_new.py", "def test(): pass\n").error is None
+    assert "BLOCKED" in tester.edit("/app/code.py", "a = 1", "a = 2").error
+    assert (tmp_path / "app" / "code.py").read_text() == "a = 1\n"
+    assert coder.edit("/app/code.py", "a = 1", "a = 2").error is None
+    assert tester.blocked is coder.blocked and len(coder.blocked) == 1

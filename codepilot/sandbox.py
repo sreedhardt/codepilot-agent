@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import EditResult, ExecuteResponse, WriteResult
+from wcmatch.glob import BRACE, DOTGLOB, GLOBSTAR, globmatch
 
 BLOCKED_EXIT_CODE = 126
 
@@ -68,16 +69,65 @@ def check_command(command: str, root: Path) -> Verdict:
     return Verdict(False, f"`{program}` is not allowed (network, installs and deletion are blocked)")
 
 
+PROTECTED_FILES = ["/**/.env", "/**/.env.*", "/**/*.secret", "/**/*.pem", "/**/*.key", "/**/*credentials*"]
+
+
+def _matches(path: str, patterns: list[str]) -> bool:
+    path = "/" + path.lstrip("/")
+    return globmatch(path, patterns, flags=GLOBSTAR | BRACE | DOTGLOB)
+
+
 class GuardedShellBackend(LocalShellBackend):
     """LocalShellBackend whose `execute` only runs commands that pass `check_command`.
 
-    Blocked attempts are recorded in `self.blocked` as (command, reason) pairs.
+    It also enforces a write policy on `write_file`/`edit_file`, because DeepAgents
+    does not support declarative permissions on backends that can execute commands:
+    protected files (secrets) are never writable, and `writable`, when given,
+    limits writes to matching paths.
+
+    Blocked attempts are recorded in `self.blocked` as (command or path, reason) pairs.
     """
 
-    def __init__(self, root_dir: str | Path, *, env: dict[str, str] | None = None, timeout: int = 120) -> None:
+    def __init__(
+        self,
+        root_dir: str | Path,
+        *,
+        env: dict[str, str] | None = None,
+        timeout: int = 120,
+        writable: list[str] | None = None,
+        protected: list[str] = PROTECTED_FILES,
+        blocked: list[tuple[str, str]] | None = None,
+    ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, env=env, inherit_env=False, timeout=timeout)
         self.root = Path(root_dir)
-        self.blocked: list[tuple[str, str]] = []
+        self.writable = writable
+        self.protected = protected
+        self.blocked = blocked if blocked is not None else []
+
+    def restricted(self, writable: list[str]) -> "GuardedShellBackend":
+        """Same sandbox and audit log, with writes limited to `writable` paths."""
+        return GuardedShellBackend(self.root, env=self._env, timeout=self._default_timeout,
+                                   writable=writable, protected=self.protected, blocked=self.blocked)
+
+    def _write_denied(self, file_path: str) -> str | None:
+        if _matches(file_path, self.protected):
+            reason = "protected file: secrets and credentials are never edited"
+        elif self.writable is not None and not _matches(file_path, self.writable):
+            reason = f"outside this agent's writable paths {self.writable}"
+        else:
+            return None
+        self.blocked.append((f"write {file_path}", reason))
+        return f"BLOCKED by CodePilot guardrail: {file_path}: {reason}. File not changed."
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        if error := self._write_denied(file_path):
+            return WriteResult(error=error)
+        return super().write(file_path, content)
+
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+        if error := self._write_denied(file_path):
+            return EditResult(error=error)
+        return super().edit(file_path, old_string, new_string, replace_all)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         verdict = check_command(command, self.root)

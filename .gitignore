@@ -15,3 +15,7 @@ wheels/
 
 # Eval run outputs
 evals/results/
+
+# Per-task workspaces and local caches
+runs/
+.codepilot_cache/

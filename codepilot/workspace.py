@@ -84,11 +84,14 @@ class TaskWorkspace:
 
     def run_tests(self) -> tuple[bool, str]:
         """Run the full suite in the sandbox (trusted path, not an agent command). Returns (passed, output tail)."""
-        result = subprocess.run(
-            ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"], cwd=self.sandbox,
-            env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
-            capture_output=True, text=True, timeout=600,
-        )
+        try:
+            result = subprocess.run(
+                ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"], cwd=self.sandbox,
+                env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True, text=True, timeout=600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:  # e.g. no interpreter at CODEPILOT_TARGET_PYTHON_BIN
+            return False, f"could not run the test suite: {type(e).__name__}: {e}"
         tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
         return result.returncode == 0, tail
 

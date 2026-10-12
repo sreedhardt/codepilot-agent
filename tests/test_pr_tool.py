@@ -48,3 +48,10 @@ def test_dry_run_writes_preview_and_second_call_does_nothing(workspace):
     assert "codepilot/issue-7-search-is-case-sensitive" in plan
     assert "fix(#7): Make search case-insensitive" in plan
     assert (workspace.working / "pr_result.md").read_text().startswith("DRY RUN")
+
+
+def test_missing_interpreter_is_a_failed_run_not_a_crash(workspace, monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEPILOT_TARGET_PYTHON_BIN", str(tmp_path / "no-python-here"))
+    (workspace.sandbox / "app.py").write_text("def f():\n    # tidy\n    return 1\n")
+    result = make_tool(workspace).invoke(ARGS)
+    assert result.startswith("FAILED: the test suite does not pass") and "could not run the test suite" in result

@@ -1,0 +1,101 @@
+"""Command line: run one issue, or poll for issues.
+
+    uv run python -m codepilot run 2            # dry run: everything except opening the PR
+    uv run python -m codepilot run 2 --open-pr  # open a real PR (asks for approval first)
+    uv run python -m codepilot poll --once      # one polling cycle over ai-assignable issues
+    uv run python -m codepilot poll             # keep polling every CODEPILOT_POLL_MINUTES
+"""
+
+import argparse
+import sys
+
+from dotenv import load_dotenv
+
+from codepilot.workspace import ROOT
+
+load_dotenv(ROOT / ".env")
+
+from codepilot.poller import PollerConfig, poll_forever  # noqa: E402
+from codepilot.runner import REGISTRY_PATH, Callbacks, RunOptions, RunResult, run_issue  # noqa: E402
+from codepilot.tasks import TaskRecord, TaskRegistry  # noqa: E402
+from codepilot.workspace import TaskWorkspace  # noqa: E402
+
+
+def target_repo():
+    from langchain_community.utilities.github import GitHubAPIWrapper
+
+    return GitHubAPIWrapper().github_repo_instance
+
+
+def console_callbacks(args) -> Callbacks:
+    def state(record: TaskRecord) -> None:
+        print(f"  STATE #{record.issue_number}: {record.state}", flush=True)
+
+    def approve(request: dict, ws: TaskWorkspace) -> dict:
+        print(f"\n  APPROVAL NEEDED [{', '.join(request['gates'])}]\n  {request['summary']}")
+        if args.approve_all or args.reject_all:
+            print(f"  -> {'approved' if args.approve_all else 'rejected'} (unattended run)")
+            return {"approved": bool(args.approve_all), "note": "unattended run"}
+        while True:
+            choice = input("  approve / reject / inspect > ").strip().lower()
+            if choice in ("a", "approve"):
+                return {"approved": True}
+            if choice in ("r", "reject"):
+                return {"approved": False, "note": input("  reason (optional) > ").strip()}
+            if choice in ("i", "inspect"):
+                for key, value in request["details"].items():
+                    if isinstance(value, str) and value.startswith("/working/"):
+                        path = ws.working / value.removeprefix("/working/")
+                        print(f"\n----- {value} -----\n{path.read_text()[:4000] if path.exists() else '(not written)'}")
+                    else:
+                        print(f"  {key}: {value}")
+
+    return Callbacks(log=lambda line: print(line, flush=True), state=state, approve=approve)
+
+
+def print_summary(result: RunResult) -> None:
+    r = result.record
+    print(f"\n{result.verdict}")
+    print(f"#{r.issue_number} {r.state} in {result.seconds:.0f}s | path: {' -> '.join(s for s, _ in r.history)}")
+    print(f"Approvals: {result.approvals} | blocked actions: {len(result.blocked)} | model retries: {len(result.retries)}"
+          f" | fix rounds after a failed test run: {r.retries_after_fail}")
+    for command, reason in result.blocked:
+        print(f"  blocked  {command!r}: {reason}")
+    for role, error in result.retries:
+        print(f"  retry    {role}: {error}")
+    if r.pr_url:
+        print(f"PR: {r.pr_url}")
+    print(f"Workspace: {r.workspace}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="codepilot")
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("run", help="Resolve one issue")
+    run.add_argument("issue", type=int)
+    poll = sub.add_parser("poll", help="Poll for eligible issues and resolve them one at a time")
+    poll.add_argument("--once", action="store_true", help="Run a single polling cycle")
+    for p in (run, poll):
+        p.add_argument("--open-pr", action="store_true", help="Open real PRs (default: dry run)")
+        p.add_argument("--recursion-limit", type=int, default=150)
+        p.add_argument("--watchdog", type=int, default=90, help="Seconds without progress before dumping stacks")
+        group = p.add_mutually_exclusive_group()
+        group.add_argument("--approve-all", action="store_true", help="Approve every gate without asking")
+        group.add_argument("--reject-all", action="store_true", help="Reject every gate without asking")
+    args = parser.parse_args()
+
+    options = RunOptions(open_pr=args.open_pr, recursion_limit=args.recursion_limit, watchdog_seconds=args.watchdog)
+    callbacks, registry = console_callbacks(args), TaskRegistry(REGISTRY_PATH)
+
+    def run_one(issue) -> None:
+        print_summary(run_issue(issue, options, callbacks, registry))
+
+    if args.command == "run":
+        run_one(target_repo().get_issue(args.issue))
+    else:
+        repo = target_repo()
+        poll_forever(lambda: repo.get_issues(state="open"), run_one, registry, PollerConfig(), once=args.once)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

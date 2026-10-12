@@ -13,6 +13,7 @@ agent wrote. True isolation needs a container (see README, Known limitations).
 """
 
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +33,17 @@ FIND_FORBIDDEN = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-
 class Verdict:
     allowed: bool
     reason: str = ""
+
+
+def is_git_push(command: str) -> bool:
+    """A single plain `git push ...` command (chained commands are rejected separately)."""
+    if any(m in command for m in SHELL_METACHARACTERS):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return argv[:2] == ["git", "push"]
 
 
 def check_command(command: str, root: Path) -> Verdict:
@@ -97,17 +109,19 @@ class GuardedShellBackend(LocalShellBackend):
         writable: list[str] | None = None,
         protected: list[str] = PROTECTED_FILES,
         blocked: list[tuple[str, str]] | None = None,
+        push_approver: Callable[[str], bool] | None = None,
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, env=env, inherit_env=False, timeout=timeout)
         self.root = Path(root_dir)
         self.writable = writable
         self.protected = protected
         self.blocked = blocked if blocked is not None else []
+        self.push_approver = push_approver
 
     def restricted(self, writable: list[str]) -> "GuardedShellBackend":
         """Same sandbox and audit log, with writes limited to `writable` paths."""
-        return GuardedShellBackend(self.root, env=self._env, timeout=self._default_timeout,
-                                   writable=writable, protected=self.protected, blocked=self.blocked)
+        return GuardedShellBackend(self.root, env=self._env, timeout=self._default_timeout, writable=writable,
+                                   protected=self.protected, blocked=self.blocked, push_approver=self.push_approver)
 
     def _write_denied(self, file_path: str) -> str | None:
         if _matches(file_path, self.protected):
@@ -130,6 +144,14 @@ class GuardedShellBackend(LocalShellBackend):
         return super().edit(file_path, old_string, new_string, replace_all)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        if is_git_push(command):
+            # Network operation: never allowed by policy alone, only with a human's approval.
+            if self.push_approver is not None and self.push_approver(command):
+                return super().execute(command, timeout=timeout)
+            reason = "git push requires human approval" + (" and was rejected" if self.push_approver else "")
+            self.blocked.append((command, reason))
+            return ExecuteResponse(output=f"BLOCKED by CodePilot guardrail: {reason}. Command not run: {command}",
+                                   exit_code=BLOCKED_EXIT_CODE)
         verdict = check_command(command, self.root)
         if not verdict.allowed:
             self.blocked.append((command, verdict.reason))

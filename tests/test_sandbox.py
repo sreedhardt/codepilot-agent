@@ -99,3 +99,26 @@ def test_writable_paths_limit_a_restricted_backend(tmp_path):
     assert (tmp_path / "app" / "code.py").read_text() == "a = 1\n"
     assert coder.edit("/app/code.py", "a = 1", "a = 2").error is None
     assert tester.blocked is coder.blocked and len(coder.blocked) == 1
+
+
+def test_git_push_is_blocked_without_an_approver(tmp_path):
+    backend = GuardedShellBackend(tmp_path)
+    result = backend.execute("git push origin main")
+    assert result.exit_code == BLOCKED_EXIT_CODE and "requires human approval" in result.output
+
+
+def test_git_push_runs_only_when_approved(tmp_path):
+    asked = []
+    backend = GuardedShellBackend(tmp_path, env={"PATH": "/usr/bin:/bin"}, push_approver=lambda c: asked.append(c) or False)
+    result = backend.execute("git push origin main")
+    assert asked == ["git push origin main"]
+    assert "rejected" in result.output and result.exit_code == BLOCKED_EXIT_CODE
+
+    approved = GuardedShellBackend(tmp_path, env={"PATH": "/usr/bin:/bin"}, push_approver=lambda c: True)
+    result = approved.execute("git push origin main")
+    assert "BLOCKED" not in result.output  # it ran (and fails here: tmp_path is not a repository)
+
+
+def test_chained_git_push_never_reaches_the_approver(tmp_path):
+    backend = GuardedShellBackend(tmp_path, push_approver=lambda c: pytest.fail("approver must not be asked"))
+    assert backend.execute("git push && rm -rf app").exit_code == BLOCKED_EXIT_CODE

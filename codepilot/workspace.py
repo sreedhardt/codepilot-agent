@@ -19,6 +19,7 @@ from pathlib import Path
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
 
+from codepilot.gates import Gate, request_approval
 from codepilot.sandbox import GuardedShellBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,10 +49,16 @@ class TaskWorkspace:
             source or target_repo(), self.sandbox,
             ignore=shutil.ignore_patterns(".venv", "node_modules", ".pytest_cache", "__pycache__", ".env"),
         )
+        self.approvals = self.working / "approvals.jsonl"
         self.shell = GuardedShellBackend(
             self.sandbox,
             env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+            push_approver=self._approve_push,
         )
+
+    def _approve_push(self, command: str) -> bool:
+        return request_approval([Gate.GIT_PUSH], f"An agent wants to run `{command}` (network operation).",
+                                {"command": command}, self.approvals).approved
 
     def _shared_routes(self) -> dict:
         return {

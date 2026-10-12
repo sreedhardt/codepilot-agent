@@ -25,6 +25,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from codepilot import github_ops
 from codepilot.classifier import TaskType
+from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
 from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
 from codepilot.skills import Skill
@@ -91,7 +92,8 @@ Start by reading /working/task.md (the issue, its task type and the selected ski
    the pull request. Do not ask it to resolve conflicts or retry if it reports FAILED.
 6. Read /working/pr_result.md: it is the authoritative outcome; never describe a PR as opened unless its first
    line starts with PR_OPENED. End with one plain-text line, no markdown:
-   `VERDICT: RESOLVED - <first line of pr_result.md>` or `VERDICT: FAILED - <reason>`.
+   `VERDICT: RESOLVED - <first line of pr_result.md>` when it starts with PR_OPENED or DRY RUN, otherwise
+   `VERDICT: FAILED - <first line of pr_result.md, or your reason>`.
 Mark todos complete as you go."""
 
 EXPLORER_PROMPT = """You are the Repo Explorer. Find the repository files relevant to a task, without editing anything.
@@ -190,8 +192,23 @@ def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
                                 f"# Body\n{plan.body}\n")
         if not open_pr:
             return "DRY RUN: PR not opened (run with --open-pr). Full preview written to /working/pr_plan.md."
+
+        repo = github_ops.target_repository()
+        gates = [Gate.PR_TO_DEFAULT_BRANCH] if repo.default_branch in ("main", "master") else []
+        if len(changes) > LARGE_COMMIT_FILES:
+            gates.append(Gate.LARGE_COMMIT)
+        if gates:
+            decision = request_approval(
+                gates,
+                f"Open PR \"{plan.title}\" from {plan.branch} into {repo.default_branch} ({len(changes)} files)?",
+                {"branch": plan.branch, "files": [c.path for c in changes],
+                 "preview": "/working/pr_plan.md", "diff": "/working/proposed_diff.txt"},
+                ws.approvals,
+            )
+            if not decision.approved:
+                return f"REJECTED by human: PR not opened. {decision.note}".strip()
         try:
-            url = github_ops.open_pull_request(github_ops.target_repository(), ws.sandbox, plan, ctx.reporter)
+            url = github_ops.open_pull_request(repo, ws.sandbox, plan, ctx.reporter)
         except github_ops.MergeConflictError as e:
             return f"FAILED: merge conflict, PR not opened and not resolved automatically: {e}"
         ws.write("pr.json", json.dumps({"url": url, "branch": plan.branch, "title": plan.title}))
@@ -286,7 +303,7 @@ def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
         backend=ws.coder_backend(),
         skills=["/skills/"],
         subagents=[tester],
-        middleware=_middleware(Role.CODER),
+        middleware=[RetryGateMiddleware(ws.approvals), *_middleware(Role.CODER)],
         name="coder",
     )
     return CompiledSubAgent(

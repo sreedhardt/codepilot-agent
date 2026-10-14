@@ -63,6 +63,7 @@ class TaskRecord:
     outcome: str = ""
     active_agent: str = ""
     retries_after_fail: int = 0
+    cost_usd: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.history:

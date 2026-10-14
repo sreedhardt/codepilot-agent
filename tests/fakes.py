@@ -12,6 +12,7 @@ class ScriptedModel(BaseChatModel):
     """Returns the scripted messages in order; tools are accepted and ignored."""
 
     script: list[AIMessage]
+    model: str = "scripted"  # reported to callbacks as ls_model_name, so costs can be priced in tests
     calls: int = 0
     received: list = []  # messages seen on each call, for assertions
 

@@ -31,6 +31,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from codepilot import github_ops
 from codepilot.classifier import TaskType
+from codepilot.costs import BudgetExceeded
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
 from codepilot.memory.working import WorkingMemoryMiddleware
 from codepilot.models import Role, build_model, model_spec
@@ -48,6 +49,8 @@ PROVIDER_KWARGS = {
     "google_genai": {},
     "ollama": {},
 }
+# DeepAgents binds a 9,999-step limit on subagents that overrides the caller's; set a real one explicitly.
+SUBAGENT_STEP_LIMIT = 100
 MODEL_CALL_LIMITS = {Role.ORCHESTRATOR: 25, Role.REPO_EXPLORER: 15, Role.CODER: 40, Role.TESTER: 20, Role.PR: 8}
 
 
@@ -62,6 +65,8 @@ RETRY_LOG: list[tuple[str, str]] = []
 def _retry_on(role: Role):
     """Retry any model failure (stalled streams, timeouts, rejected tool calls), recording each one."""
     def should_retry(exc: Exception) -> bool:
+        if isinstance(exc, BudgetExceeded):
+            return False  # the budget is spent; retrying would hit the same limit
         RETRY_LOG.append((role.value, f"{type(exc).__name__}: {str(exc)[:120]}"))
         logger.warning("model call failed for %s, retrying: %s", role.value, type(exc).__name__)
         return default_retry_on(exc)
@@ -248,7 +253,7 @@ def build_pr_agent(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool) -> Compil
         name="pr_agent",
         description="Opens the pull request for a verified change: one structured commit on a codepilot/ branch, "
                     "labelled PR to the default branch. Use only after the Test Agent reports PASS.",
-        runnable=agent,
+        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
     )
 
 
@@ -281,7 +286,7 @@ def build_explorer(ws: TaskWorkspace, repo_map: RepoMap, index: EmbeddingIndex |
     return CompiledSubAgent(
         name="repo_explorer",
         description="Finds the repository files relevant to a task and writes them to /working/relevant_files.md.",
-        runnable=agent,
+        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
     )
 
 
@@ -298,7 +303,7 @@ def build_tester(ws: TaskWorkspace) -> CompiledSubAgent:
             backend=ws.tester_backend(),
             middleware=_middleware(Role.TESTER),
             name="test_agent",
-        ),
+        ).with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
     )
 
 
@@ -330,7 +335,7 @@ def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) ->
         name="coder",
         description="Implements the change in the sandbox following the selected skill, has it verified by the "
                     "Test Agent, and writes /working/proposed_diff.txt.",
-        runnable=agent,
+        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
     )
 
 

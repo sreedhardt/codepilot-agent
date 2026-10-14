@@ -125,6 +125,12 @@ def print_summary(result: RunResult) -> None:
     print(f"#{r.issue_number} {r.state} in {result.seconds:.0f}s | path: {' -> '.join(s for s, _ in r.history)}")
     print(f"Approvals: {result.approvals} | blocked actions: {len(result.blocked)} | model retries: {len(result.retries)}"
           f" | fix rounds after a failed test run: {r.retries_after_fail}")
+    usage = result.usage or {}
+    if usage.get("agents"):
+        print(f"Cost: ${usage['total_cost_usd']:.3f}")
+        for name, u in usage["agents"].items():
+            print(f"  {name:14} {u['model']:22} {u['calls']:3} calls  in {u['input_tokens']:>8,}  out {u['output_tokens']:>6,}"
+                  f"  cache read {u['cache_read']:>8,}  ${u['cost_usd']:.3f}" + ("" if u["priced"] else "  (no price)"))
     for b in result.blocked:
         print(f"  blocked  [{b.agent}] {b.action!r}: {b.reason}")
     for role, error in result.retries:

@@ -244,6 +244,8 @@ class CodePilotApp(App):
                  f"Fix rounds after a failed test run: {r.retries_after_fail}"]
         if r.pr_url:
             lines.append(f"PR: {r.pr_url}")
+        if r.cost_usd:
+            lines.append(f"Cost: ${r.cost_usd:.3f}")
         if r.state in TERMINAL and r.outcome:
             lines.append(f"Outcome: {r.outcome[:160]}")
         if self.todos:

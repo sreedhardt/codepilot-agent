@@ -6,6 +6,7 @@ approval decisions; the runner itself never prints or reads input.
 
 import faulthandler
 import json
+import os
 import time
 import traceback
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
 from codepilot import github_ops
 from codepilot.classifier import PROVIDER_KWARGS, IssueClassifier, build_classifier
+from codepilot.costs import UsageTracker
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
 from codepilot.memory.semantic import SemanticMemory, extract_lesson, render_lessons
 from codepilot.memory.working import WorkingMemory
@@ -40,6 +42,8 @@ class RunOptions:
     recursion_limit: int = 150
     watchdog_seconds: int | None = 90
     runs_dir: Path = RUNS_DIR
+    max_cost_usd: float | None = float(os.getenv("CODEPILOT_MAX_TASK_COST_USD", "2.0"))
+    max_minutes: float | None = float(os.getenv("CODEPILOT_MAX_TASK_MINUTES", "20"))
 
 
 @dataclass
@@ -68,6 +72,7 @@ class RunResult:
     retries: list[tuple[str, str]] = field(default_factory=list)
     approvals: int = 0
     lesson: str | None = None
+    usage: dict = field(default_factory=dict)
 
 
 def run_issue(
@@ -82,6 +87,7 @@ def run_issue(
     options, callbacks, memory = options or RunOptions(), callbacks or Callbacks(), memory or Memory()
     registry = registry or TaskRegistry(REGISTRY_PATH)
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)
+    usage = UsageTracker(options.max_cost_usd, None if options.max_minutes is None else options.max_minutes * 60)
 
     classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
     skill = skill_for(classification.task_type)
@@ -123,7 +129,8 @@ def run_issue(
                           issue.user.login if issue.user else None, classification.task_type)
         agent = build_orchestrator(ws, repo_map, skill, ctx, index, checkpointer=InMemorySaver(),
                                    open_pr=options.open_pr, snapshot=snapshot)
-        config = {"recursion_limit": options.recursion_limit, "configurable": {"thread_id": ws.root.name}}
+        config = {"recursion_limit": options.recursion_limit, "configurable": {"thread_id": ws.root.name},
+                  "callbacks": [usage]}
         payload = {"messages": [{"role": "user",
                                  "content": f"Resolve issue #{issue.number}. Start with /working/task.md."}]}
         while True:
@@ -139,6 +146,7 @@ def run_issue(
         if options.watchdog_seconds:
             faulthandler.cancel_dump_traceback_later()
 
+    record.cost_usd = round(usage.total_cost, 4)
     tracker.finish(ws.working, error)
     snapshot()
     working.archive(ws)
@@ -157,6 +165,7 @@ def run_issue(
         retries=agents.RETRY_LOG[retries_before:],
         approvals=ws.approvals.read_text().count("\n") if ws.approvals.exists() else 0,
         lesson=lesson,
+        usage=usage.summary(),
     )
     (ws.root / "task.json").write_text(json.dumps(asdict(record), indent=1))
     return result

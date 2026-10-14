@@ -89,3 +89,22 @@ def test_full_team_run_uses_and_records_memory(target, tmp_path):
     assert [t["issue_number"] for t in memory.episodic.tasks] == [7]
     assert memory.episodic.tasks[0]["files_modified"] == ["app.py"]
     assert result.lesson is None  # dry run: no PR, so nothing to learn yet
+
+
+def test_budget_breach_fails_the_task_with_a_clear_reason(target, tmp_path):
+    issue = SimpleNamespace(number=7, title="Annotate f", body="Please annotate f.",
+                            html_url="https://example.com/7", user=SimpleNamespace(login="someone"))
+    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs", max_minutes=0),
+                              runner.Callbacks(), TaskRegistry(tmp_path / "tasks.json"), FakeClassifier())
+    assert result.record.state == TaskState.FAILED
+    assert "deadline" in result.record.outcome
+
+
+def test_subagents_get_an_explicit_step_limit(target, tmp_path):
+    from codepilot.agents import SUBAGENT_STEP_LIMIT, TaskContext, build_team
+    from codepilot.repo_map import build_repo_map
+    from codepilot.workspace import TaskWorkspace
+
+    ws = TaskWorkspace(1, runs_dir=tmp_path / "runs")
+    team = build_team(ws, build_repo_map(ws.sandbox), TaskContext(1, "t", "u", None, TaskType.BUG_FIX))
+    assert all(sub["runnable"].config["recursion_limit"] == SUBAGENT_STEP_LIMIT for sub in team)

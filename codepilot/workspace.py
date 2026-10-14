@@ -20,9 +20,12 @@ from pathlib import Path
 from deepagents.backends import CompositeBackend, FilesystemBackend
 
 from codepilot.gates import Gate, request_approval
-from codepilot.sandbox import GuardedShellBackend
+from codepilot.sandbox import GuardedShellBackend, ProtectedFilesBackend
 
 ROOT = Path(__file__).resolve().parents[1]
+# Working-memory files written only by CodePilot's code; agents may read them but never change them.
+RECORD_FILES = ["/task.md", "/repo_map.md", "/proposed_diff.txt", "/pr_plan.md", "/pr_result.md", "/pr.json",
+                "/approvals.jsonl", "/working_memory.json"]
 RUNS_DIR = ROOT / "runs"
 
 
@@ -62,8 +65,9 @@ class TaskWorkspace:
 
     def _shared_routes(self) -> dict:
         return {
-            "/working/": FilesystemBackend(root_dir=self.working, virtual_mode=True),
-            "/skills/": FilesystemBackend(root_dir=self.skills, virtual_mode=True),
+            "/working/": ProtectedFilesBackend(self.working, RECORD_FILES, self.shell.blocked),
+            "/skills/": ProtectedFilesBackend(self.skills, ["/**"], self.shell.blocked,
+                                              reason="skills are read-only for agents"),
         }
 
     def orchestrator_backend(self) -> CompositeBackend:

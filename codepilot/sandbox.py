@@ -17,8 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from deepagents.backends import LocalShellBackend
-from deepagents.backends.protocol import EditResult, ExecuteResponse, WriteResult
+from deepagents.backends import FilesystemBackend, LocalShellBackend
+from deepagents.backends.protocol import DeleteResult, EditResult, ExecuteResponse, WriteResult
 from wcmatch.glob import BRACE, DOTGLOB, GLOBSTAR, globmatch
 
 BLOCKED_EXIT_CODE = 126
@@ -143,6 +143,11 @@ class GuardedShellBackend(LocalShellBackend):
             return EditResult(error=error)
         return super().edit(file_path, old_string, new_string, replace_all)
 
+    def delete(self, file_path: str) -> DeleteResult:
+        if error := self._write_denied(file_path):
+            return DeleteResult(error=error)
+        return super().delete(file_path)
+
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         if is_git_push(command):
             # Network operation: never allowed by policy alone, only with a human's approval.
@@ -160,3 +165,39 @@ class GuardedShellBackend(LocalShellBackend):
                 exit_code=BLOCKED_EXIT_CODE,
             )
         return super().execute(command, timeout=timeout)
+
+
+class ProtectedFilesBackend(FilesystemBackend):
+    """A filesystem view where matching files can be read but never written, edited or deleted by an agent.
+
+    Used for shared working memory, whose record files (task, PR outcome, approvals log) are written only by
+    CodePilot's own code, and for the read-only skills directory.
+    """
+
+    def __init__(self, root_dir: str | Path, protected: list[str], blocked: list[tuple[str, str]] | None = None,
+                 reason: str = "record file: written only by CodePilot, read-only for agents") -> None:
+        super().__init__(root_dir=root_dir, virtual_mode=True)
+        self.protected = protected
+        self.blocked = blocked if blocked is not None else []
+        self.reason = reason
+
+    def _denied(self, file_path: str) -> str | None:
+        if not _matches(file_path, self.protected):
+            return None
+        self.blocked.append((f"write {file_path}", self.reason))
+        return f"BLOCKED by CodePilot guardrail: {file_path}: {self.reason}. File not changed."
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        if error := self._denied(file_path):
+            return WriteResult(error=error)
+        return super().write(file_path, content)
+
+    def edit(self, file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+        if error := self._denied(file_path):
+            return EditResult(error=error)
+        return super().edit(file_path, old_string, new_string, replace_all)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        if error := self._denied(file_path):
+            return DeleteResult(error=error)
+        return super().delete(file_path)

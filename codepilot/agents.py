@@ -16,7 +16,12 @@ from typing import Literal
 
 from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.middleware.permissions import FilesystemPermission
-from langchain.agents.middleware import ModelCallLimitMiddleware, ModelFallbackMiddleware, ModelRetryMiddleware
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware,
+    ModelFallbackMiddleware,
+    ModelRetryMiddleware,
+    TodoListMiddleware,
+)
 from langchain.agents.middleware.model_retry import default_retry_on
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -268,6 +273,23 @@ def build_explorer(ws: TaskWorkspace, repo_map: RepoMap, index: EmbeddingIndex |
     )
 
 
+def build_tester(ws: TaskWorkspace) -> CompiledSubAgent:
+    # Write rules for the Coder and Test Agent live in their GuardedShellBackend (secrets are protected,
+    # the Test Agent may only write tests): DeepAgents rejects declarative permissions on executing backends.
+    return CompiledSubAgent(
+        name="test_agent",
+        description="Independently reviews test coverage for the change, adds missing tests, runs the full suite "
+                    "and reports PASS or FAIL with failures.",
+        runnable=create_deep_agent(
+            model=_model(Role.TESTER),
+            system_prompt=TESTER_PROMPT,
+            backend=ws.tester_backend(),
+            middleware=_middleware(Role.TESTER),
+            name="test_agent",
+        ),
+    )
+
+
 def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
     @tool
     def write_diff_preview() -> str:
@@ -282,28 +304,14 @@ def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
         stat = subprocess.run(["git", "diff", "--stat"], cwd=ws.sandbox, capture_output=True, text=True).stdout
         return f"Wrote /working/proposed_diff.txt\n{stat}" + (f"New files: {untracked}" if untracked else "")
 
-    # Write rules for the Coder and Test Agent live in their GuardedShellBackend (secrets are protected,
-    # the Test Agent may only write tests): DeepAgents rejects declarative permissions on executing backends.
-    tester = CompiledSubAgent(
-        name="test_agent",
-        description="Independently reviews test coverage for the change, adds missing tests, runs the full suite "
-                    "and reports PASS or FAIL with failures.",
-        runnable=create_deep_agent(
-            model=_model(Role.TESTER),
-            system_prompt=TESTER_PROMPT,
-            backend=ws.tester_backend(),
-            middleware=_middleware(Role.TESTER),
-            name="test_agent",
-        ),
-    )
     agent = create_deep_agent(
         model=_model(Role.CODER),
         tools=[write_diff_preview],
         system_prompt=CODER_PROMPT,
         backend=ws.coder_backend(),
         skills=["/skills/"],
-        subagents=[tester],
-        middleware=[RetryGateMiddleware(ws.approvals), *_middleware(Role.CODER)],
+        subagents=[build_tester(ws)],
+        middleware=[TodoListMiddleware(), RetryGateMiddleware(ws.approvals), *_middleware(Role.CODER)],
         name="coder",
     )
     return CompiledSubAgent(
@@ -312,6 +320,12 @@ def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
                     "Test Agent, and writes /working/proposed_diff.txt.",
         runnable=agent,
     )
+
+
+def build_team(ws: TaskWorkspace, repo_map: RepoMap, ctx: TaskContext, index: EmbeddingIndex | None = None,
+               open_pr: bool = False) -> list[CompiledSubAgent]:
+    """The Orchestrator's subagents. The Test Agent is the Coder's own subagent."""
+    return [build_explorer(ws, repo_map, index), build_coder(ws), build_pr_agent(ws, ctx, open_pr)]
 
 
 def build_orchestrator(
@@ -328,8 +342,8 @@ def build_orchestrator(
         model=_model(Role.ORCHESTRATOR),
         system_prompt=ORCHESTRATOR_PROMPT,
         backend=ws.orchestrator_backend(),
-        subagents=[build_explorer(ws, repo_map, index), build_coder(ws), build_pr_agent(ws, ctx, open_pr)],
-        middleware=_middleware(Role.ORCHESTRATOR),
+        subagents=build_team(ws, repo_map, ctx, index, open_pr),
+        middleware=[TodoListMiddleware(), *_middleware(Role.ORCHESTRATOR)],
         checkpointer=checkpointer,
         name="orchestrator",
     )

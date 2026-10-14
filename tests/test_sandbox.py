@@ -122,3 +122,33 @@ def test_git_push_runs_only_when_approved(tmp_path):
 def test_chained_git_push_never_reaches_the_approver(tmp_path):
     backend = GuardedShellBackend(tmp_path, push_approver=lambda c: pytest.fail("approver must not be asked"))
     assert backend.execute("git push && rm -rf app").exit_code == BLOCKED_EXIT_CODE
+
+
+def test_delete_follows_the_write_policy(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "code.py").write_text("a = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_old.py").write_text("x = 1\n")
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    coder = GuardedShellBackend(tmp_path)
+    tester = coder.restricted(["/tests/**"])
+
+    assert "BLOCKED" in tester.delete("/app/code.py").error
+    assert "BLOCKED" in coder.delete("/.env").error
+    assert tester.delete("/tests/test_old.py").error is None
+    assert (tmp_path / "app" / "code.py").exists() and (tmp_path / ".env").exists()
+    assert not (tmp_path / "tests" / "test_old.py").exists()
+
+
+def test_record_files_are_read_only_for_agents(tmp_path):
+    from codepilot.sandbox import ProtectedFilesBackend
+
+    (tmp_path / "pr_result.md").write_text("DRY RUN\n")
+    working = ProtectedFilesBackend(tmp_path, ["/pr_result.md", "/approvals.jsonl"])
+
+    assert "BLOCKED" in working.write("/pr_result.md", "PR_OPENED fake").error
+    assert "BLOCKED" in working.edit("/pr_result.md", "DRY RUN", "PR_OPENED").error
+    assert "BLOCKED" in working.delete("/pr_result.md").error
+    assert "BLOCKED" in working.write("/approvals.jsonl", "{}").error
+    assert (tmp_path / "pr_result.md").read_text() == "DRY RUN\n"
+    assert working.write("/test_report.md", "PASS").error is None  # agent-owned files stay writable

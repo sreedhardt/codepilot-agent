@@ -66,6 +66,27 @@ def learn_from(workspace: Path) -> None:
     print(f"saved draft lesson {lesson_id} (PR #{pr_number})\n{lesson.model_dump_json(indent=1)}")
 
 
+def run_tui(args, options: RunOptions, registry: TaskRegistry, repo, memory: Memory) -> None:
+    from dataclasses import replace
+
+    from codepilot.tui import CodePilotApp
+
+    config = PollerConfig()
+    if args.poll_minutes is not None:
+        config.interval_minutes = args.poll_minutes
+
+    def run_one(issue, callbacks: Callbacks, open_pr: bool) -> RunResult:
+        return run_issue(issue, replace(options, open_pr=open_pr, watchdog_seconds=None), callbacks, registry,
+                         memory=memory)
+
+    app = CodePilotApp(lambda: list(repo.get_issues(state="open")), run_one, registry, config, open_pr=args.open_pr)
+    try:
+        app.run()
+    finally:
+        summary = memory.episodic.end_session()
+        print(f"memory: session saved ({len(summary['tasks'])} task(s))")
+
+
 def target_repo():
     from langchain_community.utilities.github import GitHubAPIWrapper
 
@@ -122,9 +143,11 @@ def main() -> None:
     run.add_argument("issue", type=int)
     poll = sub.add_parser("poll", help="Poll for eligible issues and resolve them one at a time")
     poll.add_argument("--once", action="store_true", help="Run a single polling cycle")
+    tui = sub.add_parser("tui", help="Terminal UI: issue feed, active task, agent logs and approvals")
+    tui.add_argument("--poll-minutes", type=float, default=None, help="Override CODEPILOT_POLL_MINUTES")
     learn = sub.add_parser("learn", help="Extract a draft lesson from a finished task workspace with an opened PR")
     learn.add_argument("workspace", type=Path, help="e.g. runs/issue-2-20261014-093359")
-    for p in (run, poll):
+    for p in (run, poll, tui):
         p.add_argument("--open-pr", action="store_true", help="Open real PRs (default: dry run)")
         p.add_argument("--recursion-limit", type=int, default=150)
         p.add_argument("--watchdog", type=int, default=90, help="Seconds without progress before dumping stacks")
@@ -142,6 +165,9 @@ def main() -> None:
 
     def run_one(issue) -> None:
         print_summary(run_issue(issue, options, callbacks, registry, memory=memory))
+
+    if args.command == "tui":
+        return run_tui(args, options, registry, repo, memory)
 
     try:
         if args.command == "run":

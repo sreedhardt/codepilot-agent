@@ -47,6 +47,7 @@ class Callbacks:
     log: Callable[[str], None] = lambda line: None
     state: Callable[[TaskRecord], None] = lambda record: None
     approve: Callable[[dict, TaskWorkspace], dict] = lambda request, ws: {"approved": False, "note": "no approver"}
+    todos: Callable[[str, list[dict]], None] = lambda agent, todos: None
 
 
 @dataclass
@@ -212,6 +213,9 @@ def _stream(agent, payload, config, tracker: TaskTracker, callbacks: Callbacks, 
         for node_update in update.values():
             if not isinstance(node_update, dict):
                 continue
+            if node_update.get("todos"):
+                # write_todos updates arrive without a message name; attribute them to the agent last seen acting.
+                callbacks.todos(tracker.record.active_agent or "orchestrator", list(node_update["todos"]))
             for msg in node_update.get("messages", []):
                 if not isinstance(msg, AIMessage):
                     continue

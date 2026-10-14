@@ -17,12 +17,14 @@ dependencies = [
     "pygithub>=2.10.0",
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
+    "textual>=8.2.8",
     "tiktoken>=0.14.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [tool.pytest.ini_options]

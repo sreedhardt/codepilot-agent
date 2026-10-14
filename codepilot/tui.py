@@ -78,7 +78,7 @@ class InspectScreen(ModalScreen[None]):
 class CodePilotApp(App):
     TITLE = "CodePilot"
     CSS = """
-    Grid { grid-size: 2 2; grid-columns: 1fr 2fr; grid-rows: 1fr 1fr; }
+    Grid { grid-size: 2 2; grid-columns: 1fr 1fr; grid-rows: 1fr 1fr; }
     .panel { border: round $accent; padding: 0 1; }
     #issues, #task, #logs, #approval { height: 100%; }
     #approval-input { dock: bottom; }
@@ -122,7 +122,7 @@ class CodePilotApp(App):
         with Grid():
             yield ListView(id="issues", classes="panel")
             yield Static("No active task.", id="task", classes="panel")
-            yield RichLog(id="logs", classes="panel", wrap=True, markup=False, max_lines=5000)
+            yield RichLog(id="logs", classes="panel", wrap=True, min_width=20, markup=False, max_lines=5000)
             with Vertical(id="approval", classes="panel"):
                 yield Static("No approval needed.", id="approval-text")
                 yield Input(placeholder="approve / reject / inspect", id="approval-input", disabled=True)

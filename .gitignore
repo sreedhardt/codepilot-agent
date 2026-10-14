@@ -19,3 +19,6 @@ evals/results/
 # Per-task workspaces and local caches
 runs/
 .codepilot_cache/
+
+# Persistent memory (episodic store, lessons)
+.codepilot_memory/

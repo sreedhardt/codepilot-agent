@@ -13,6 +13,7 @@ class ScriptedModel(BaseChatModel):
 
     script: list[AIMessage]
     calls: int = 0
+    received: list = []  # messages seen on each call, for assertions
 
     @property
     def _llm_type(self) -> str:
@@ -22,6 +23,7 @@ class ScriptedModel(BaseChatModel):
         return self
 
     def _generate(self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
+        self.received.append(list(messages))
         message = self.script[min(self.calls, len(self.script) - 1)]
         self.calls += 1
         return ChatResult(generations=[ChatGeneration(message=message)])

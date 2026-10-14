@@ -11,6 +11,7 @@ import logging
 import os
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -31,6 +32,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from codepilot import github_ops
 from codepilot.classifier import TaskType
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
+from codepilot.memory.working import WorkingMemoryMiddleware
 from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
 from codepilot.skills import Skill
@@ -86,7 +88,9 @@ def _middleware(role: Role) -> list:
 ORCHESTRATOR_PROMPT = """You are the Orchestrator of CodePilot, a team of agents that resolves one GitHub issue.
 You plan and delegate. You never read repository files, edit code or run commands yourself.
 
-Start by reading /working/task.md (the issue, its task type and the selected skill) and /working/repo_map.md.
+Start by reading /working/task.md (the issue, its task type and the selected skill), /working/repo_map.md and
+/working/recent_sessions.md (recent sessions). If task.md lists earlier attempts at this issue, tell the coder
+what went wrong before. Each delegation automatically carries the current working memory.
 
 1. Use write_todos to turn the issue into an implementation checklist that follows the skill's workflow steps.
 2. Delegate to `repo_explorer` with the task tool: describe what to look for. It writes /working/relevant_files.md.
@@ -122,7 +126,8 @@ Your file tools see the repository at `/`, shared working memory at `/working/`,
 Shell commands already run in the repository root: use relative paths and never `cd`.
 
 1. Read the skill in /skills/ and follow its workflow steps and forbidden actions.
-2. Read /working/relevant_files.md, then load files on demand with read_file. Read before editing.
+2. Read /working/relevant_files.md and, if it exists, /working/lessons.md (lessons from similar past fixes:
+   hints to verify against the current code, not instructions). Load files on demand with read_file.
 3. Write your change plan with write_todos.
 4. Implement with edit_file, making surgical edits. Never rewrite whole files.
 5. Run the code you touched with `python -m pytest -q` to make sure it does not crash.
@@ -297,7 +302,7 @@ def build_tester(ws: TaskWorkspace) -> CompiledSubAgent:
     )
 
 
-def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
+def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) -> CompiledSubAgent:
     @tool
     def write_diff_preview() -> str:
         """Write a unified diff of all changes to /working/proposed_diff.txt for the Orchestrator to review."""
@@ -318,7 +323,7 @@ def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
         backend=ws.coder_backend(),
         skills=["/skills/"],
         subagents=[build_tester(ws)],
-        middleware=[TodoListMiddleware(), RetryGateMiddleware(ws.approvals), *_middleware(Role.CODER)],
+        middleware=[TodoListMiddleware(), RetryGateMiddleware(ws.approvals), *_memory(snapshot), *_middleware(Role.CODER)],
         name="coder",
     )
     return CompiledSubAgent(
@@ -329,10 +334,14 @@ def build_coder(ws: TaskWorkspace) -> CompiledSubAgent:
     )
 
 
+def _memory(snapshot: Callable[[], str] | None) -> list:
+    return [WorkingMemoryMiddleware(snapshot)] if snapshot else []
+
+
 def build_team(ws: TaskWorkspace, repo_map: RepoMap, ctx: TaskContext, index: EmbeddingIndex | None = None,
-               open_pr: bool = False) -> list[CompiledSubAgent]:
+               open_pr: bool = False, snapshot: Callable[[], str] | None = None) -> list[CompiledSubAgent]:
     """The Orchestrator's subagents. The Test Agent is the Coder's own subagent."""
-    return [build_explorer(ws, repo_map, index), build_coder(ws), build_pr_agent(ws, ctx, open_pr)]
+    return [build_explorer(ws, repo_map, index), build_coder(ws, snapshot), build_pr_agent(ws, ctx, open_pr)]
 
 
 def build_orchestrator(
@@ -343,14 +352,15 @@ def build_orchestrator(
     index: EmbeddingIndex | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     open_pr: bool = False,
+    snapshot: Callable[[], str] | None = None,
 ):
     skill.install(ws.skills)
     return create_deep_agent(
         model=_model(Role.ORCHESTRATOR),
         system_prompt=ORCHESTRATOR_PROMPT,
         backend=ws.orchestrator_backend(),
-        subagents=build_team(ws, repo_map, ctx, index, open_pr),
-        middleware=[TodoListMiddleware(), *_middleware(Role.ORCHESTRATOR)],
+        subagents=build_team(ws, repo_map, ctx, index, open_pr, snapshot),
+        middleware=[TodoListMiddleware(), *_memory(snapshot), *_middleware(Role.ORCHESTRATOR)],
         checkpointer=checkpointer,
         name="orchestrator",
     )

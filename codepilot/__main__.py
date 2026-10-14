@@ -16,9 +16,32 @@ from codepilot.workspace import ROOT
 load_dotenv(ROOT / ".env")
 
 from codepilot.poller import PollerConfig, poll_forever  # noqa: E402
-from codepilot.runner import REGISTRY_PATH, Callbacks, RunOptions, RunResult, run_issue  # noqa: E402
+import os  # noqa: E402
+
+from codepilot.memory.episodic import EpisodicMemory, open_store  # noqa: E402
+from codepilot.memory.semantic import SemanticMemory  # noqa: E402
+from codepilot.runner import REGISTRY_PATH, Callbacks, Memory, RunOptions, RunResult, run_issue  # noqa: E402
 from codepilot.tasks import TaskRecord, TaskRegistry  # noqa: E402
 from codepilot.workspace import TaskWorkspace  # noqa: E402
+
+
+MEMORY_DIR = ROOT / ".codepilot_memory"
+
+
+def open_memory(repo) -> Memory:
+    """Open the persistent memory tiers, start a session, and refresh lesson status from GitHub."""
+    name = os.environ["GITHUB_REPOSITORY"]
+    memory = Memory(EpisodicMemory(open_store(MEMORY_DIR / "episodes.sqlite"), name),
+                    SemanticMemory(MEMORY_DIR / "lessons", name))
+    memory.episodic.start_session()
+
+    def pr_state(number: int) -> str:
+        pr = repo.get_pull(number)
+        return "merged" if pr.merged else pr.state
+
+    for lesson_id, status in memory.semantic.promote(pr_state).items():
+        print(f"memory: lesson {lesson_id} -> {status}")
+    return memory
 
 
 def target_repo():
@@ -65,6 +88,8 @@ def print_summary(result: RunResult) -> None:
         print(f"  retry    {role}: {error}")
     if r.pr_url:
         print(f"PR: {r.pr_url}")
+    if result.lesson:
+        print(f"Lesson: {result.lesson} (draft until the PR is merged)")
     print(f"Workspace: {r.workspace}")
 
 
@@ -85,16 +110,20 @@ def main() -> None:
     args = parser.parse_args()
 
     options = RunOptions(open_pr=args.open_pr, recursion_limit=args.recursion_limit, watchdog_seconds=args.watchdog)
-    callbacks, registry = console_callbacks(args), TaskRegistry(REGISTRY_PATH)
+    callbacks, registry, repo = console_callbacks(args), TaskRegistry(REGISTRY_PATH), target_repo()
+    memory = open_memory(repo)
 
     def run_one(issue) -> None:
-        print_summary(run_issue(issue, options, callbacks, registry))
+        print_summary(run_issue(issue, options, callbacks, registry, memory=memory))
 
-    if args.command == "run":
-        run_one(target_repo().get_issue(args.issue))
-    else:
-        repo = target_repo()
-        poll_forever(lambda: repo.get_issues(state="open"), run_one, registry, PollerConfig(), once=args.once)
+    try:
+        if args.command == "run":
+            run_one(repo.get_issue(args.issue))
+        else:
+            poll_forever(lambda: repo.get_issues(state="open"), run_one, registry, PollerConfig(), once=args.once)
+    finally:
+        summary = memory.episodic.end_session()
+        print(f"\nmemory: session saved ({len(summary['tasks'])} task(s))")
 
 
 if __name__ == "__main__":

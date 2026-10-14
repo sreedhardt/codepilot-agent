@@ -69,3 +69,23 @@ def test_full_team_dry_run(target, tmp_path):
     plan = (result.workspace.working / "pr_plan.md").read_text()
     assert "codepilot/issue-7-annotate-f" in plan and "fix(#7): Annotate f" in plan
     assert any("coder" in line and "edit_file" in line for line in logs)
+
+
+def test_full_team_run_uses_and_records_memory(target, tmp_path):
+    from codepilot.memory.episodic import EpisodicMemory, open_store
+    from codepilot.memory.semantic import SemanticMemory
+
+    memory = runner.Memory(EpisodicMemory(open_store(tmp_path / "e.sqlite"), "o/r"), SemanticMemory(tmp_path / "l", "o/r"))
+    memory.episodic.start_session()
+    issue = SimpleNamespace(number=7, title="Annotate f", body="Please annotate f.",
+                            html_url="https://example.com/7", user=SimpleNamespace(login="someone"))
+
+    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs"),
+                              runner.Callbacks(), TaskRegistry(tmp_path / "tasks.json"), FakeClassifier(), memory)
+
+    working = result.workspace.working
+    assert (working / "recent_sessions.md").exists() and (working / "lessons.md").exists()
+    assert (working / "working_memory.final.json").exists() and not (working / "working_memory.json").exists()
+    assert [t["issue_number"] for t in memory.episodic.tasks] == [7]
+    assert memory.episodic.tasks[0]["files_modified"] == ["app.py"]
+    assert result.lesson is None  # dry run: no PR, so nothing to learn yet

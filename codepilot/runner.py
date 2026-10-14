@@ -18,7 +18,12 @@ from langgraph.types import Command
 
 from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
-from codepilot.classifier import IssueClassifier, build_classifier
+from codepilot import github_ops
+from codepilot.classifier import PROVIDER_KWARGS, IssueClassifier, build_classifier
+from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
+from codepilot.memory.semantic import SemanticMemory, extract_lesson, render_lessons
+from codepilot.memory.working import WorkingMemory
+from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, build_repo_map
 from codepilot.sandbox import BlockedAction
 from codepilot.skills import skill_for
@@ -45,6 +50,14 @@ class Callbacks:
 
 
 @dataclass
+class Memory:
+    """The cross-task memory tiers; working memory is created per task by the runner."""
+
+    episodic: EpisodicMemory | None = None
+    semantic: SemanticMemory | None = None
+
+
+@dataclass
 class RunResult:
     record: TaskRecord
     verdict: str
@@ -53,6 +66,7 @@ class RunResult:
     blocked: list[BlockedAction] = field(default_factory=list)
     retries: list[tuple[str, str]] = field(default_factory=list)
     approvals: int = 0
+    lesson: str | None = None
 
 
 def run_issue(
@@ -61,9 +75,10 @@ def run_issue(
     callbacks: Callbacks | None = None,
     registry: TaskRegistry | None = None,
     classifier: IssueClassifier | None = None,
+    memory: Memory | None = None,
 ) -> RunResult:
     """`issue` is a PyGithub Issue (number, title, body, html_url, user)."""
-    options, callbacks = options or RunOptions(), callbacks or Callbacks()
+    options, callbacks, memory = options or RunOptions(), callbacks or Callbacks(), memory or Memory()
     registry = registry or TaskRegistry(REGISTRY_PATH)
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)
 
@@ -73,8 +88,16 @@ def run_issue(
     workspace = ws.root.relative_to(ROOT) if ws.root.is_relative_to(ROOT) else ws.root
     record = TaskRecord(issue.number, issue.title, classification.task_type.value, skill.skill_id, str(workspace))
 
+    working = WorkingMemory(issue.number, issue.title, issue.html_url, classification.task_type.value, skill.skill_id)
+
+    def snapshot() -> str:
+        working.refresh(ws, record.state.value, record.retries_after_fail)
+        working.save(ws)
+        return working.snapshot()
+
     def on_change(r: TaskRecord) -> None:
         registry.save(r)
+        snapshot()
         callbacks.state(r)
 
     tracker = TaskTracker(record, on_change)
@@ -91,11 +114,14 @@ def run_issue(
             f"# Issue #{issue.number}: {issue.title}\n\n{issue.body}\n\n"
             f"Task type: {classification.task_type}\nSkill: {skill.skill_id} (installed at /skills/{skill.name}/)\n"
             f"Skill workflow: {' -> '.join(skill.workflow_steps)}\n"
+            + _previous_attempts(memory, issue.number)
         ))
+        _write_memories(memory, ws, issue, callbacks)
+        snapshot()
         ctx = TaskContext(issue.number, issue.title, issue.html_url,
                           issue.user.login if issue.user else None, classification.task_type)
         agent = build_orchestrator(ws, repo_map, skill, ctx, index, checkpointer=InMemorySaver(),
-                                   open_pr=options.open_pr)
+                                   open_pr=options.open_pr, snapshot=snapshot)
         config = {"recursion_limit": options.recursion_limit, "configurable": {"thread_id": ws.root.name}}
         payload = {"messages": [{"role": "user",
                                  "content": f"Resolve issue #{issue.number}. Start with /working/task.md."}]}
@@ -113,6 +139,13 @@ def run_issue(
             faulthandler.cancel_dump_traceback_later()
 
     tracker.finish(ws.working, error)
+    snapshot()
+    working.archive(ws)
+    lesson = _learn(memory, ws, issue, record, callbacks)
+    if memory.episodic is not None:
+        files = [c.path for c in github_ops.sandbox_changes(ws.sandbox)]
+        memory.episodic.record(TaskEpisode(issue.number, issue.title, record.task_type, record.state.value,
+                                           record.outcome, files, round(time.monotonic() - started, 1), record.pr_url))
     verdicts = [line.strip(" *`") for line in final_text.splitlines() if "VERDICT:" in line]
     result = RunResult(
         record=record,
@@ -122,9 +155,49 @@ def run_issue(
         blocked=list(ws.shell.blocked),
         retries=agents.RETRY_LOG[retries_before:],
         approvals=ws.approvals.read_text().count("\n") if ws.approvals.exists() else 0,
+        lesson=lesson,
     )
     (ws.root / "task.json").write_text(json.dumps(asdict(record), indent=1))
     return result
+
+
+def _previous_attempts(memory: Memory, issue_number: int) -> str:
+    if memory.episodic is None:
+        return ""
+    attempts = memory.episodic.previous_attempts(issue_number)
+    if not attempts:
+        return ""
+    lines = [f"- {a['state']}: {a['outcome'][:200]}" for a in attempts]
+    return "\nEarlier attempts at this issue (recent sessions):\n" + "\n".join(lines) + "\n"
+
+
+def _write_memories(memory: Memory, ws: TaskWorkspace, issue, callbacks: Callbacks) -> None:
+    if memory.episodic is not None:
+        ws.write("recent_sessions.md", memory.episodic.render_recent(3))
+    if memory.semantic is not None:
+        lessons = memory.semantic.search(f"{issue.title}\n{issue.body or ''}")
+        ws.write("lessons.md", render_lessons(lessons))
+        callbacks.log(f"memory: {len(lessons)} lesson(s) retrieved"
+                      + (f" ({', '.join(l['id'] for l in lessons)})" if lessons else ""))
+
+
+def _learn(memory: Memory, ws: TaskWorkspace, issue, record: TaskRecord, callbacks: Callbacks) -> str | None:
+    """After a PR opens, extract a lesson and store it as a draft until the PR is merged."""
+    if memory.semantic is None or not record.pr_url:
+        return None
+    try:
+        provider = model_spec(Role.SUMMARIZER).partition(":")[0]
+        model = build_model(Role.SUMMARIZER, **PROVIDER_KWARGS.get(provider, {}))
+        read = lambda name: (ws.working / name).read_text() if (ws.working / name).exists() else ""  # noqa: E731
+        lesson = extract_lesson(model, read("task.md"), read("proposed_diff.txt"), read("test_report.md"),
+                                structured_method="json_schema" if provider == "groq" else None)
+        pr_number = int(record.pr_url.rstrip("/").rsplit("/", 1)[1])
+        lesson_id = memory.semantic.add_draft(issue.number, issue.title, record.task_type, lesson, pr_number)
+        callbacks.log(f"memory: saved draft lesson {lesson_id} (promoted when PR #{pr_number} is merged)")
+        return lesson_id
+    except Exception as e:  # noqa: BLE001 - a failed lesson extraction must not fail a finished task
+        callbacks.log(f"memory: lesson extraction failed: {type(e).__name__}: {e}")
+        return None
 
 
 def _stream(agent, payload, config, tracker: TaskTracker, callbacks: Callbacks, started: float,

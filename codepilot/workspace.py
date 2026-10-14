@@ -25,7 +25,8 @@ from codepilot.sandbox import GuardedShellBackend, ProtectedFilesBackend
 ROOT = Path(__file__).resolve().parents[1]
 # Working-memory files written only by CodePilot's code; agents may read them but never change them.
 RECORD_FILES = ["/task.md", "/repo_map.md", "/proposed_diff.txt", "/pr_plan.md", "/pr_result.md", "/pr.json",
-                "/approvals.jsonl", "/working_memory.json"]
+                "/approvals.jsonl", "/working_memory.json", "/working_memory.final.json", "/recent_sessions.md",
+                "/lessons.md"]
 RUNS_DIR = ROOT / "runs"
 
 

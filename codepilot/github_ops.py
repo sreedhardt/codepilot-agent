@@ -60,8 +60,12 @@ def branch_name(issue_number: int, title: str) -> str:
     return f"codepilot/issue-{issue_number}-{slugify(title)}"
 
 
+LEADING_TYPE = re.compile(r"^(fix|feat|feature|docs|build|chore|refactor|test)(\([^)]*\))?\s*:\s*", re.IGNORECASE)
+
+
 def commit_message(task_type: TaskType, issue_number: int, summary: str, what: list[str], why: list[str]) -> str:
-    summary = clean(summary).rstrip(".")
+    summary = LEADING_TYPE.sub("", clean(summary)).rstrip(".")
+    summary = summary[:1].upper() + summary[1:]
     bullets = [f"- {clean(line)}" for line in [*what, *why] if clean(line)]
     return f"{COMMIT_TYPES[task_type]}(#{issue_number}): {summary}\n\n" + "\n".join([*bullets, f"- Closes #{issue_number}"])
 

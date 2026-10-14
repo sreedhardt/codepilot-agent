@@ -29,7 +29,7 @@ def test_commit_message_follows_brief_format():
 
 @pytest.mark.parametrize("task_type, prefix", [(TaskType.FEATURE_ADDITION, "feat"), (TaskType.DOCUMENTATION, "docs")])
 def test_commit_type_follows_task_type(task_type, prefix):
-    assert github_ops.commit_message(task_type, 3, "x", [], []).startswith(f"{prefix}(#3): x")
+    assert github_ops.commit_message(task_type, 3, "x", [], []).startswith(f"{prefix}(#3): X")
 
 
 def test_pr_body_has_required_sections():
@@ -89,3 +89,10 @@ def test_conflict_when_upstream_touched_same_file():
 ])
 def test_clean_only_strips_stray_quotes(raw, expected):
     assert github_ops.clean(raw) == expected
+
+
+@pytest.mark.parametrize("summary", ["Fix: book search is case-insensitive", "fix(search): book search is case-insensitive",
+                                     "FIX:  book search is case-insensitive"])
+def test_commit_message_drops_a_type_prefix_the_model_added(summary):
+    msg = github_ops.commit_message(TaskType.BUG_FIX, 2, summary, [], [])
+    assert msg.splitlines()[0] == "fix(#2): Book search is case-insensitive"

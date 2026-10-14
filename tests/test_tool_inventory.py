@@ -56,3 +56,10 @@ def test_no_agent_can_touch_github_except_through_open_pull_request(team):
         for name in tools_of(graph):
             if github_words & set(name.split("_")):
                 assert (agent, name) == ("pr_agent", "open_pull_request")
+
+
+def test_every_agent_with_a_shell_is_told_the_shell_rules():
+    from codepilot.agents import CODER_PROMPT, SHELL_RULES, TESTER_PROMPT
+
+    for prompt in (CODER_PROMPT, TESTER_PROMPT):
+        assert SHELL_RULES in prompt

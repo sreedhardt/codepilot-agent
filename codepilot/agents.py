@@ -110,6 +110,12 @@ EXPLORER_PROMPT = """You are the Repo Explorer. Find the repository files releva
   Include the test files that cover the relevant code.
 - Reply with the same list. Do not include file contents in your reply."""
 
+SHELL_RULES = """Shell rules (enforced by a guardrail; violations are blocked and logged):
+- Commands already run in the repository root. Use relative paths; never `cd`, never absolute paths.
+- One plain command per call: no pipes, `&&`, `;`, redirection (`2>&1`, `>`) or `$(...)`.
+- Allowed: python -m pytest, ls, cat, grep, find, head, tail, wc, git status/diff/log/show. No installs.
+- If a command is blocked, explain what you wanted to do and why instead of retrying variations."""
+
 CODER_PROMPT = """You are the Coder in CodePilot. You implement one change in a Python repository.
 
 Your file tools see the repository at `/`, shared working memory at `/working/`, and your skill at `/skills/`.
@@ -124,9 +130,8 @@ Shell commands already run in the repository root: use relative paths and never 
    Stop after 3 failed verification rounds and report what is wrong.
 7. Call write_diff_preview, then reply with: root cause, files changed, tests added, verification result.
 
-Shell commands pass through a guardrail: one plain command per call, no pipes, chaining or redirection.
-Allowed: python -m pytest, ls, cat, grep, find, head, tail, wc, git status/diff/log/show. No installs.
-If a command is blocked, explain what you wanted to do and why instead of retrying variations."""
+
+""" + SHELL_RULES
 
 TESTER_PROMPT = """You are the Test Agent. You verify a change the Coder made, independently.
 
@@ -136,7 +141,9 @@ TESTER_PROMPT = """You are the Test Agent. You verify a change the Coder made, i
 3. Run the full suite with `python -m pytest -q`.
 4. Write /working/test_report.md: the command, pass/fail counts, and for each failure the test name and a
    one-line cause taken from the output.
-5. Reply starting with `PASS` or `FAIL`, then the counts and failures."""
+5. Reply starting with `PASS` or `FAIL`, then the counts and failures.
+
+""" + SHELL_RULES
 
 
 PR_PROMPT = """You are the PR Agent. You open the pull request for a verified change; you do not change code.

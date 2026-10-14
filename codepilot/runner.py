@@ -22,7 +22,7 @@ from codepilot.classifier import IssueClassifier, build_classifier
 from codepilot.repo_map import EmbeddingIndex, build_repo_map
 from codepilot.skills import skill_for
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskTracker
-from codepilot.workspace import ROOT, TaskWorkspace
+from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace
 
 CACHE = ROOT / ".codepilot_cache"
 REGISTRY_PATH = ROOT / "runs" / "tasks.json"
@@ -33,6 +33,7 @@ class RunOptions:
     open_pr: bool = False
     recursion_limit: int = 150
     watchdog_seconds: int | None = 90
+    runs_dir: Path = RUNS_DIR
 
 
 @dataclass
@@ -67,9 +68,9 @@ def run_issue(
 
     classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
     skill = skill_for(classification.task_type)
-    ws = TaskWorkspace(issue.number)
-    record = TaskRecord(issue.number, issue.title, classification.task_type.value, skill.skill_id,
-                        str(ws.root.relative_to(ROOT)))
+    ws = TaskWorkspace(issue.number, runs_dir=options.runs_dir)
+    workspace = ws.root.relative_to(ROOT) if ws.root.is_relative_to(ROOT) else ws.root
+    record = TaskRecord(issue.number, issue.title, classification.task_type.value, skill.skill_id, str(workspace))
 
     def on_change(r: TaskRecord) -> None:
         registry.save(r)

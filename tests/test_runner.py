@@ -57,7 +57,7 @@ def test_full_team_dry_run(target, tmp_path):
     issue = SimpleNamespace(number=7, title="Annotate f", body="Please annotate f.",
                             html_url="https://example.com/7", user=SimpleNamespace(login="someone"))
 
-    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None),
+    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs"),
                               runner.Callbacks(log=logs.append, state=lambda r: states.append(r.state)),
                               registry, FakeClassifier())
 

@@ -227,7 +227,7 @@ def build_pr_agent(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool) -> Compil
         model=_model(Role.PR),
         tools=[make_pr_tool(ws, ctx, open_pr)],
         system_prompt=PR_PROMPT,
-        backend=ws.orchestrator_backend(),
+        backend=ws.orchestrator_backend(agent="pr_agent"),
         permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
         middleware=_middleware(Role.PR),
         name="pr_agent",

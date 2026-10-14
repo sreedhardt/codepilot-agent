@@ -167,7 +167,7 @@ def run_one(spec: str, issue: int, recursion_limit: int) -> dict:
         "turns": len(ai),
         "tool_calls": dict(tool_calls),
         "tool_errors": tool_errors,
-        "blocked_commands": backend.blocked,
+        "blocked_commands": [[b.agent, b.action, b.reason] for b in backend.blocked],
         **usage_and_cost(spec, messages),
         **evaluate(sandbox, issue),
         "final_message": (ai[-1].text if ai and isinstance(ai[-1].text, str) else "")[:600],

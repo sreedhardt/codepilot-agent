@@ -59,8 +59,8 @@ def print_summary(result: RunResult) -> None:
     print(f"#{r.issue_number} {r.state} in {result.seconds:.0f}s | path: {' -> '.join(s for s, _ in r.history)}")
     print(f"Approvals: {result.approvals} | blocked actions: {len(result.blocked)} | model retries: {len(result.retries)}"
           f" | fix rounds after a failed test run: {r.retries_after_fail}")
-    for command, reason in result.blocked:
-        print(f"  blocked  {command!r}: {reason}")
+    for b in result.blocked:
+        print(f"  blocked  [{b.agent}] {b.action!r}: {b.reason}")
     for role, error in result.retries:
         print(f"  retry    {role}: {error}")
     if r.pr_url:

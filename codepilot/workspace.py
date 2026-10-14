@@ -57,34 +57,35 @@ class TaskWorkspace:
             self.sandbox,
             env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
             push_approver=self._approve_push,
+            agent="coder",
         )
 
     def _approve_push(self, command: str) -> bool:
         return request_approval([Gate.GIT_PUSH], f"An agent wants to run `{command}` (network operation).",
                                 {"command": command}, self.approvals).approved
 
-    def _shared_routes(self) -> dict:
+    def _shared_routes(self, agent: str) -> dict:
         return {
-            "/working/": ProtectedFilesBackend(self.working, RECORD_FILES, self.shell.blocked),
+            "/working/": ProtectedFilesBackend(self.working, RECORD_FILES, self.shell.blocked, agent=agent),
             "/skills/": ProtectedFilesBackend(self.skills, ["/**"], self.shell.blocked,
-                                              reason="skills are read-only for agents"),
+                                              reason="skills are read-only for agents", agent=agent),
         }
 
-    def orchestrator_backend(self) -> CompositeBackend:
+    def orchestrator_backend(self, agent: str = "orchestrator") -> CompositeBackend:
         """Scratch space plus shared working memory; no repository access, no shell."""
-        return CompositeBackend(FilesystemBackend(root_dir=self.scratch, virtual_mode=True), self._shared_routes())
+        return CompositeBackend(FilesystemBackend(root_dir=self.scratch, virtual_mode=True), self._shared_routes(agent))
 
     def explorer_backend(self) -> CompositeBackend:
         """The repository (made read-only by permissions) plus shared working memory; no shell."""
-        return CompositeBackend(FilesystemBackend(root_dir=self.sandbox, virtual_mode=True), self._shared_routes())
+        return CompositeBackend(FilesystemBackend(root_dir=self.sandbox, virtual_mode=True), self._shared_routes("repo_explorer"))
 
     def coder_backend(self) -> CompositeBackend:
         """The repository with the guarded shell, plus shared working memory."""
-        return CompositeBackend(self.shell, self._shared_routes())
+        return CompositeBackend(self.shell, self._shared_routes("coder"))
 
     def tester_backend(self) -> CompositeBackend:
         """Same sandbox and shell as the Coder, but only test files are writable."""
-        return CompositeBackend(self.shell.restricted(["/tests/**"]), self._shared_routes())
+        return CompositeBackend(self.shell.restricted(["/tests/**"], agent="test_agent"), self._shared_routes("test_agent"))
 
     def run_tests(self) -> tuple[bool, str]:
         """Run the full suite in the sandbox (trusted path, not an agent command). Returns (passed, output tail)."""

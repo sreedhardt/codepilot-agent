@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from codepilot.sandbox import BLOCKED_EXIT_CODE, GuardedShellBackend, check_command
+from codepilot.sandbox import BLOCKED_EXIT_CODE, BlockedAction, GuardedShellBackend, check_command
 
 ROOT = Path("/tmp/codepilot-sandbox-test")
 
@@ -68,7 +68,7 @@ def test_backend_refuses_without_running(tmp_path):
     assert result.exit_code == BLOCKED_EXIT_CODE
     assert "BLOCKED" in result.output
     assert marker.exists()
-    assert backend.blocked == [("rm keep.txt", "`rm` is not allowed (network, installs and deletion are blocked)")]
+    assert backend.blocked == [BlockedAction("agent", "rm keep.txt", "`rm` is not allowed (network, installs and deletion are blocked)")]
 
 
 def test_backend_runs_allowed_commands_in_sandbox(tmp_path):
@@ -92,13 +92,13 @@ def test_writable_paths_limit_a_restricted_backend(tmp_path):
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "code.py").write_text("a = 1\n")
     coder = GuardedShellBackend(tmp_path)
-    tester = coder.restricted(["/tests/**"])
+    tester = coder.restricted(["/tests/**"], agent="test_agent")
 
     assert tester.write("/tests/test_new.py", "def test(): pass\n").error is None
     assert "BLOCKED" in tester.edit("/app/code.py", "a = 1", "a = 2").error
     assert (tmp_path / "app" / "code.py").read_text() == "a = 1\n"
     assert coder.edit("/app/code.py", "a = 1", "a = 2").error is None
-    assert tester.blocked is coder.blocked and len(coder.blocked) == 1
+    assert tester.blocked is coder.blocked and [b.agent for b in coder.blocked] == ["test_agent"]
 
 
 def test_git_push_is_blocked_without_an_approver(tmp_path):
@@ -130,8 +130,8 @@ def test_delete_follows_the_write_policy(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_old.py").write_text("x = 1\n")
     (tmp_path / ".env").write_text("SECRET=1\n")
-    coder = GuardedShellBackend(tmp_path)
-    tester = coder.restricted(["/tests/**"])
+    coder = GuardedShellBackend(tmp_path, agent="coder")
+    tester = coder.restricted(["/tests/**"], agent="test_agent")
 
     assert "BLOCKED" in tester.delete("/app/code.py").error
     assert "BLOCKED" in coder.delete("/.env").error

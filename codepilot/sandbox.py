@@ -30,6 +30,15 @@ FIND_FORBIDDEN = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-
 
 
 @dataclass
+class BlockedAction:
+    """A guardrail refusal: which agent tried what, and why it was refused."""
+
+    agent: str
+    action: str
+    reason: str
+
+
+@dataclass
 class Verdict:
     allowed: bool
     reason: str = ""
@@ -97,7 +106,7 @@ class GuardedShellBackend(LocalShellBackend):
     protected files (secrets) are never writable, and `writable`, when given,
     limits writes to matching paths.
 
-    Blocked attempts are recorded in `self.blocked` as (command or path, reason) pairs.
+    Refusals are appended to `self.blocked` as BlockedAction records, tagged with `agent`.
     """
 
     def __init__(
@@ -108,8 +117,9 @@ class GuardedShellBackend(LocalShellBackend):
         timeout: int = 120,
         writable: list[str] | None = None,
         protected: list[str] = PROTECTED_FILES,
-        blocked: list[tuple[str, str]] | None = None,
+        blocked: list[BlockedAction] | None = None,
         push_approver: Callable[[str], bool] | None = None,
+        agent: str = "agent",
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, env=env, inherit_env=False, timeout=timeout)
         self.root = Path(root_dir)
@@ -117,11 +127,13 @@ class GuardedShellBackend(LocalShellBackend):
         self.protected = protected
         self.blocked = blocked if blocked is not None else []
         self.push_approver = push_approver
+        self.agent = agent
 
-    def restricted(self, writable: list[str]) -> "GuardedShellBackend":
-        """Same sandbox and audit log, with writes limited to `writable` paths."""
+    def restricted(self, writable: list[str], agent: str) -> "GuardedShellBackend":
+        """Same sandbox and audit log, for another agent, with writes limited to `writable` paths."""
         return GuardedShellBackend(self.root, env=self._env, timeout=self._default_timeout, writable=writable,
-                                   protected=self.protected, blocked=self.blocked, push_approver=self.push_approver)
+                                   protected=self.protected, blocked=self.blocked, push_approver=self.push_approver,
+                                   agent=agent)
 
     def _write_denied(self, file_path: str) -> str | None:
         if _matches(file_path, self.protected):
@@ -130,7 +142,7 @@ class GuardedShellBackend(LocalShellBackend):
             reason = f"outside this agent's writable paths {self.writable}"
         else:
             return None
-        self.blocked.append((f"write {file_path}", reason))
+        self.blocked.append(BlockedAction(self.agent, f"write {file_path}", reason))
         return f"BLOCKED by CodePilot guardrail: {file_path}: {reason}. File not changed."
 
     def write(self, file_path: str, content: str) -> WriteResult:
@@ -154,12 +166,12 @@ class GuardedShellBackend(LocalShellBackend):
             if self.push_approver is not None and self.push_approver(command):
                 return super().execute(command, timeout=timeout)
             reason = "git push requires human approval" + (" and was rejected" if self.push_approver else "")
-            self.blocked.append((command, reason))
+            self.blocked.append(BlockedAction(self.agent, command, reason))
             return ExecuteResponse(output=f"BLOCKED by CodePilot guardrail: {reason}. Command not run: {command}",
                                    exit_code=BLOCKED_EXIT_CODE)
         verdict = check_command(command, self.root)
         if not verdict.allowed:
-            self.blocked.append((command, verdict.reason))
+            self.blocked.append(BlockedAction(self.agent, command, verdict.reason))
             return ExecuteResponse(
                 output=f"BLOCKED by CodePilot guardrail: {verdict.reason}. Command not run: {command}",
                 exit_code=BLOCKED_EXIT_CODE,
@@ -174,17 +186,18 @@ class ProtectedFilesBackend(FilesystemBackend):
     CodePilot's own code, and for the read-only skills directory.
     """
 
-    def __init__(self, root_dir: str | Path, protected: list[str], blocked: list[tuple[str, str]] | None = None,
-                 reason: str = "record file: written only by CodePilot, read-only for agents") -> None:
+    def __init__(self, root_dir: str | Path, protected: list[str], blocked: list[BlockedAction] | None = None,
+                 reason: str = "record file: written only by CodePilot, read-only for agents", agent: str = "agent") -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True)
         self.protected = protected
         self.blocked = blocked if blocked is not None else []
         self.reason = reason
+        self.agent = agent
 
     def _denied(self, file_path: str) -> str | None:
         if not _matches(file_path, self.protected):
             return None
-        self.blocked.append((f"write {file_path}", self.reason))
+        self.blocked.append(BlockedAction(self.agent, f"write {file_path}", self.reason))
         return f"BLOCKED by CodePilot guardrail: {file_path}: {self.reason}. File not changed."
 
     def write(self, file_path: str, content: str) -> WriteResult:

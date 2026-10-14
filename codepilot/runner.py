@@ -20,6 +20,7 @@ from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
 from codepilot.classifier import IssueClassifier, build_classifier
 from codepilot.repo_map import EmbeddingIndex, build_repo_map
+from codepilot.sandbox import BlockedAction
 from codepilot.skills import skill_for
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskTracker
 from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace
@@ -49,7 +50,7 @@ class RunResult:
     verdict: str
     seconds: float
     workspace: TaskWorkspace
-    blocked: list[tuple[str, str]] = field(default_factory=list)
+    blocked: list[BlockedAction] = field(default_factory=list)
     retries: list[tuple[str, str]] = field(default_factory=list)
     approvals: int = 0
 

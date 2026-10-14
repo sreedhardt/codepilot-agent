@@ -55,3 +55,15 @@ def test_missing_interpreter_is_a_failed_run_not_a_crash(workspace, monkeypatch,
     (workspace.sandbox / "app.py").write_text("def f():\n    # tidy\n    return 1\n")
     result = make_tool(workspace).invoke(ARGS)
     assert result.startswith("FAILED: the test suite does not pass") and "could not run the test suite" in result
+
+
+def test_blocked_actions_name_the_agent_that_tried_them(workspace):
+    workspace.write("pr_result.md", "DRY RUN\n")
+
+    workspace.tester_backend().write("/app.py", "x = 2\n")
+    workspace.orchestrator_backend().edit("/working/pr_result.md", "DRY RUN", "PR_OPENED fake")
+    workspace.coder_backend().execute("git commit -am sneaky")
+
+    assert [(b.agent, b.action.split()[0]) for b in workspace.shell.blocked] == [
+        ("test_agent", "write"), ("orchestrator", "write"), ("coder", "git")]
+    assert (workspace.working / "pr_result.md").read_text() == "DRY RUN\n"

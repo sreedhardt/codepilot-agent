@@ -7,7 +7,9 @@
 """
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -42,6 +44,26 @@ def open_memory(repo) -> Memory:
     for lesson_id, status in memory.semantic.promote(pr_state).items():
         print(f"memory: lesson {lesson_id} -> {status}")
     return memory
+
+
+def learn_from(workspace: Path) -> None:
+    from codepilot.classifier import PROVIDER_KWARGS
+    from codepilot.memory.semantic import extract_lesson
+    from codepilot.models import Role, build_model, model_spec
+
+    record = json.loads((workspace / "task.json").read_text())
+    if not record.get("pr_url"):
+        sys.exit(f"{workspace} has no opened PR; lessons are only learned from PRs.")
+    working = workspace / "working"
+    read = lambda name: (working / name).read_text() if (working / name).exists() else ""  # noqa: E731
+    provider = model_spec(Role.SUMMARIZER).partition(":")[0]
+    model = build_model(Role.SUMMARIZER, **PROVIDER_KWARGS.get(provider, {}))
+    lesson = extract_lesson(model, read("task.md"), read("proposed_diff.txt"), read("test_report.md"),
+                            structured_method="json_schema" if provider == "groq" else None)
+    memory = SemanticMemory(MEMORY_DIR / "lessons", os.environ["GITHUB_REPOSITORY"])
+    pr_number = int(record["pr_url"].rstrip("/").rsplit("/", 1)[1])
+    lesson_id = memory.add_draft(record["issue_number"], record["title"], record["task_type"], lesson, pr_number)
+    print(f"saved draft lesson {lesson_id} (PR #{pr_number})\n{lesson.model_dump_json(indent=1)}")
 
 
 def target_repo():
@@ -100,6 +122,8 @@ def main() -> None:
     run.add_argument("issue", type=int)
     poll = sub.add_parser("poll", help="Poll for eligible issues and resolve them one at a time")
     poll.add_argument("--once", action="store_true", help="Run a single polling cycle")
+    learn = sub.add_parser("learn", help="Extract a draft lesson from a finished task workspace with an opened PR")
+    learn.add_argument("workspace", type=Path, help="e.g. runs/issue-2-20261014-093359")
     for p in (run, poll):
         p.add_argument("--open-pr", action="store_true", help="Open real PRs (default: dry run)")
         p.add_argument("--recursion-limit", type=int, default=150)
@@ -108,6 +132,9 @@ def main() -> None:
         group.add_argument("--approve-all", action="store_true", help="Approve every gate without asking")
         group.add_argument("--reject-all", action="store_true", help="Reject every gate without asking")
     args = parser.parse_args()
+
+    if args.command == "learn":
+        return learn_from(args.workspace)
 
     options = RunOptions(open_pr=args.open_pr, recursion_limit=args.recursion_limit, watchdog_seconds=args.watchdog)
     callbacks, registry, repo = console_callbacks(args), TaskRegistry(REGISTRY_PATH), target_repo()

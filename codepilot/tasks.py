@@ -72,6 +72,11 @@ class TaskRecord:
         if not self.history:
             self.history.append((self.state.value, _now()))
 
+    @property
+    def dry_run(self) -> bool:
+        """Finished without opening a PR because PRs were disabled: a preview, not a resolution."""
+        return self.state == TaskState.DONE and self.pr_url is None and self.outcome.startswith("DRY RUN")
+
     def move(self, new: TaskState, note: str = "") -> bool:
         """Apply a transition if it is allowed; FAILED is reachable from any non-terminal state."""
         if new == self.state:

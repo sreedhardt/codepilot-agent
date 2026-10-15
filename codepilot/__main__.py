@@ -71,7 +71,7 @@ def run_tui(args, options: RunOptions, registry: TaskRegistry, repo, memory: Mem
 
     from codepilot.tui import CodePilotApp
 
-    config = PollerConfig()
+    config = PollerConfig(open_pr=args.open_pr)
     if args.poll_minutes is not None:
         config.interval_minutes = args.poll_minutes
 
@@ -182,7 +182,8 @@ def main() -> None:
         if args.command == "run":
             run_one(repo.get_issue(args.issue))
         else:
-            poll_forever(lambda: repo.get_issues(state="open"), run_one, registry, PollerConfig(), once=args.once)
+            poll_forever(lambda: repo.get_issues(state="open"), run_one, registry, PollerConfig(open_pr=args.open_pr),
+                         once=args.once)
     finally:
         summary = memory.episodic.end_session()
         print(f"\nmemory: session saved ({len(summary['tasks'])} task(s))")

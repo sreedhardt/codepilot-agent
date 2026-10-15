@@ -70,3 +70,17 @@ def test_billing_failure_pauses_polling_and_keeps_the_issue_eligible(tmp_path):
     assert ran == [1]  # #2 would fail the same way, so it is not started
     assert logs[-1].startswith("poll: paused")
     assert skip_reason(issue(1), registry, CONFIG) is None  # retried as soon as polling resumes
+
+
+def test_dry_run_results_are_previews_only_when_opening_prs(tmp_path):
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    r = TaskRecord(3, "t", "bug_fix", "bug_fix_skill", "runs/x")
+    r.move(TaskState.IMPLEMENTING)
+    r.move(TaskState.DONE, "DRY RUN: PR not opened (run with --open-pr).")
+    registry.save(r)
+    finished(registry, 4, TaskState.DONE, pr_url="https://example.com/pr/4")
+    opening = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, open_pr=True)
+
+    assert skip_reason(issue(3), registry, CONFIG).startswith("already handled")  # no rerun on every dry-run poll
+    assert skip_reason(issue(3), registry, opening) is None
+    assert skip_reason(issue(4), registry, opening).startswith("already handled")  # a real PR is never redone

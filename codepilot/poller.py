@@ -16,6 +16,7 @@ class PollerConfig:
     interval_minutes: float = float(os.getenv("CODEPILOT_POLL_MINUTES", "5"))
     label: str = os.getenv("CODEPILOT_ISSUE_LABEL", DEFAULT_LABEL)
     retry_failed_after_hours: float = float(os.getenv("CODEPILOT_RETRY_FAILED_AFTER_HOURS", "24"))
+    open_pr: bool = False  # when PRs are opened, a dry-run result is only a preview and the issue is taken again
 
 
 def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | None:
@@ -32,6 +33,8 @@ def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | No
     if record.state not in TERMINAL:
         return f"already in progress ({record.state})"
     if record.state == TaskState.DONE:
+        if config.open_pr and record.dry_run:
+            return None
         return f"already handled ({record.pr_url or record.outcome})"
     if record.billing_blocked:
         return None  # never really attempted; take it again as soon as polling resumes

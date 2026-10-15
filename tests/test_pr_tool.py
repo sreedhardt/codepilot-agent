@@ -32,7 +32,8 @@ def test_no_changes_means_no_pr(workspace):
 
 def test_failing_suite_means_no_pr(workspace):
     (workspace.sandbox / "app.py").write_text("def f():\n    return 2\n")
-    assert make_tool(workspace).invoke(ARGS).startswith("FAILED: the test suite does not pass")
+    result = make_tool(workspace).invoke(ARGS)
+    assert result.startswith("FAILED: the test suite does not pass") and "1 failed" in result
 
 
 def test_dry_run_writes_preview_and_second_call_does_nothing(workspace):

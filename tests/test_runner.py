@@ -1,8 +1,6 @@
 """End-to-end runner test with scripted models: the full agent team, no API calls."""
 
 import subprocess
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +44,6 @@ def target(tmp_path, monkeypatch):
     for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     monkeypatch.setenv("CODEPILOT_TARGET_PATH", str(repo))
-    monkeypatch.setenv("CODEPILOT_TARGET_PYTHON_BIN", str(Path(sys.executable).parent))
     monkeypatch.setattr(agents, "_model", lambda role: ScriptedModel(script=SCRIPTS[role]))
     monkeypatch.setattr(runner, "CACHE", tmp_path / "cache")
     return repo

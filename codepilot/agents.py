@@ -26,6 +26,7 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.model_retry import default_retry_on
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -49,9 +50,23 @@ PROVIDER_KWARGS = {
     "google_genai": {},
     "ollama": {},
 }
-# DeepAgents binds a 9,999-step limit on subagents that overrides the caller's; set a real one explicitly.
-SUBAGENT_STEP_LIMIT = 100
 MODEL_CALL_LIMITS = {Role.ORCHESTRATOR: 25, Role.REPO_EXPLORER: 15, Role.CODER: 40, Role.TESTER: 20, Role.PR: 8}
+
+
+def step_limit(agent: Runnable, role: Role) -> int:
+    """A LangGraph step limit that never cuts an agent off before its model-call cap does.
+
+    Every middleware hook is its own graph node, so one model call costs several steps (five for the Coder).
+    Allowing one pass over every node per call, plus one spare pass, keeps ModelCallLimitMiddleware the
+    binding limit: it ends the run cleanly, while the step limit raises GraphRecursionError.
+    """
+    nodes = [n for n in agent.get_graph().nodes if not n.startswith("__")]
+    return (MODEL_CALL_LIMITS.get(role, 20) + 1) * len(nodes)
+
+
+def _with_step_limit(agent: Runnable, role: Role) -> Runnable:
+    # DeepAgents binds a 9,999-step limit on subagents that overrides the caller's; set a real one explicitly.
+    return agent.with_config({"recursion_limit": step_limit(agent, role)})
 
 
 def _model(role: Role) -> BaseChatModel:
@@ -253,7 +268,7 @@ def build_pr_agent(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool) -> Compil
         name="pr_agent",
         description="Opens the pull request for a verified change: one structured commit on a codepilot/ branch, "
                     "labelled PR to the default branch. Use only after the Test Agent reports PASS.",
-        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
+        runnable=_with_step_limit(agent, Role.PR),
     )
 
 
@@ -286,7 +301,7 @@ def build_explorer(ws: TaskWorkspace, repo_map: RepoMap, index: EmbeddingIndex |
     return CompiledSubAgent(
         name="repo_explorer",
         description="Finds the repository files relevant to a task and writes them to /working/relevant_files.md.",
-        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
+        runnable=_with_step_limit(agent, Role.REPO_EXPLORER),
     )
 
 
@@ -297,13 +312,13 @@ def build_tester(ws: TaskWorkspace) -> CompiledSubAgent:
         name="test_agent",
         description="Independently reviews test coverage for the change, adds missing tests, runs the full suite "
                     "and reports PASS or FAIL with failures.",
-        runnable=create_deep_agent(
+        runnable=_with_step_limit(create_deep_agent(
             model=_model(Role.TESTER),
             system_prompt=TESTER_PROMPT,
             backend=ws.tester_backend(),
             middleware=_middleware(Role.TESTER),
             name="test_agent",
-        ).with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
+        ), Role.TESTER),
     )
 
 
@@ -335,7 +350,7 @@ def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) ->
         name="coder",
         description="Implements the change in the sandbox following the selected skill, has it verified by the "
                     "Test Agent, and writes /working/proposed_diff.txt.",
-        runnable=agent.with_config({"recursion_limit": SUBAGENT_STEP_LIMIT}),
+        runnable=_with_step_limit(agent, Role.CODER),
     )
 
 

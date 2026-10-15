@@ -100,11 +100,16 @@ def test_budget_breach_fails_the_task_with_a_clear_reason(target, tmp_path):
     assert "deadline" in result.record.outcome
 
 
-def test_subagents_get_an_explicit_step_limit(target, tmp_path):
-    from codepilot.agents import SUBAGENT_STEP_LIMIT, TaskContext, build_team
+def test_step_limits_outlast_model_call_caps(target, tmp_path):
+    from codepilot.agents import MODEL_CALL_LIMITS, TaskContext, build_team
     from codepilot.repo_map import build_repo_map
     from codepilot.workspace import TaskWorkspace
 
     ws = TaskWorkspace(1, runs_dir=tmp_path / "runs")
     team = build_team(ws, build_repo_map(ws.sandbox), TaskContext(1, "t", "u", None, TaskType.BUG_FIX))
-    assert all(sub["runnable"].config["recursion_limit"] == SUBAGENT_STEP_LIMIT for sub in team)
+    roles = {"repo_explorer": Role.REPO_EXPLORER, "coder": Role.CODER, "pr_agent": Role.PR}
+    for sub in team:
+        runnable = sub["runnable"]
+        loop = [n for n in runnable.get_graph().nodes if not n.startswith("__") and not n.endswith(".before_agent")]
+        # a run that uses its whole model-call cap must end by the cap, not by GraphRecursionError
+        assert runnable.config["recursion_limit"] > MODEL_CALL_LIMITS[roles[sub["name"]]] * len(loop)

@@ -155,7 +155,8 @@ def main() -> None:
     learn.add_argument("workspace", type=Path, help="e.g. runs/issue-2-20261014-093359")
     for p in (run, poll, tui):
         p.add_argument("--open-pr", action="store_true", help="Open real PRs (default: dry run)")
-        p.add_argument("--recursion-limit", type=int, default=150)
+        p.add_argument("--recursion-limit", type=int, default=None,
+                       help="Orchestrator step limit (default: derived from its model-call cap)")
         p.add_argument("--watchdog", type=int, default=90, help="Seconds without progress before dumping stacks")
         group = p.add_mutually_exclusive_group()
         group.add_argument("--approve-all", action="store_true", help="Approve every gate without asking")

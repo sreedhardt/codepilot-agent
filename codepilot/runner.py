@@ -39,7 +39,7 @@ REGISTRY_PATH = ROOT / "runs" / "tasks.json"
 @dataclass
 class RunOptions:
     open_pr: bool = False
-    recursion_limit: int = 150
+    recursion_limit: int | None = None  # None: derived from the Orchestrator's model-call cap
     watchdog_seconds: int | None = 90
     runs_dir: Path = RUNS_DIR
     max_cost_usd: float | None = float(os.getenv("CODEPILOT_MAX_TASK_COST_USD", "2.0"))
@@ -129,7 +129,8 @@ def run_issue(
                           issue.user.login if issue.user else None, classification.task_type)
         agent = build_orchestrator(ws, repo_map, skill, ctx, index, checkpointer=InMemorySaver(),
                                    open_pr=options.open_pr, snapshot=snapshot)
-        config = {"recursion_limit": options.recursion_limit, "configurable": {"thread_id": ws.root.name},
+        limit = options.recursion_limit or agents.step_limit(agent, Role.ORCHESTRATOR)
+        config = {"recursion_limit": limit, "configurable": {"thread_id": ws.root.name},
                   "callbacks": [usage]}
         payload = {"messages": [{"role": "user",
                                  "content": f"Resolve issue #{issue.number}. Start with /working/task.md."}]}

@@ -30,7 +30,7 @@ from codepilot.repo_map import EmbeddingIndex, build_repo_map
 from codepilot.sandbox import BlockedAction
 from codepilot.skills import skill_for
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskTracker
-from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace
+from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace, require_target_python
 
 CACHE = ROOT / ".codepilot_cache"
 REGISTRY_PATH = ROOT / "runs" / "tasks.json"
@@ -84,6 +84,7 @@ def run_issue(
     memory: Memory | None = None,
 ) -> RunResult:
     """`issue` is a PyGithub Issue (number, title, body, html_url, user)."""
+    require_target_python()
     options, callbacks, memory = options or RunOptions(), callbacks or Callbacks(), memory or Memory()
     registry = registry or TaskRegistry(REGISTRY_PATH)
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)

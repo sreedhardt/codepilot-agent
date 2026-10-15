@@ -145,3 +145,12 @@ def test_billing_failure_is_flagged_on_the_record(target, tmp_path, monkeypatch)
     assert result.record.state == TaskState.FAILED and "credit balance" in result.record.outcome
     assert registry.get(7).billing_blocked
     assert result.retries == []
+
+
+def test_missing_target_interpreter_stops_before_any_model_call(target, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_TARGET_PYTHON_BIN", str(tmp_path / "no-venv" / "bin"))
+    classifier = FakeClassifier()
+    classifier.classify = lambda title, body: pytest.fail("classified despite a missing interpreter")
+    with pytest.raises(FileNotFoundError, match="CODEPILOT_TARGET_PYTHON_BIN"):
+        runner.run_issue(SimpleNamespace(number=7, title="t", body="b"), runner.RunOptions(runs_dir=tmp_path / "runs"),
+                         runner.Callbacks(), TaskRegistry(tmp_path / "tasks.json"), classifier)

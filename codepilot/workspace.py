@@ -39,6 +39,18 @@ def target_python_bin() -> Path:
     return Path(os.getenv("CODEPILOT_TARGET_PYTHON_BIN", default)).resolve()
 
 
+def require_target_python() -> None:
+    """Fail before any work if the target's interpreter is missing.
+
+    Agent shells put this directory first on PATH; without it, `python` would resolve to a system Python
+    that lacks the target's dependencies, and every test verdict would be about the wrong environment.
+    """
+    python = target_python_bin() / "python"
+    if not python.exists():
+        raise FileNotFoundError(f"no Python interpreter at {python}: create the target repo's .venv or set "
+                                "CODEPILOT_TARGET_PYTHON_BIN to its bin directory")
+
+
 class TaskWorkspace:
     def __init__(self, issue_number: int, runs_dir: Path = RUNS_DIR, source: Path | None = None) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -91,8 +103,10 @@ class TaskWorkspace:
     def run_tests(self) -> tuple[bool, str]:
         """Run the full suite in the sandbox (trusted path, not an agent command). Returns (passed, output tail)."""
         try:
+            # An absolute interpreter path: a bare "python" would fall through to a system Python on PATH when
+            # the target venv is missing, and judge the change with the wrong interpreter.
             result = subprocess.run(
-                ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"], cwd=self.sandbox,
+                [str(target_python_bin() / "python"), "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"], cwd=self.sandbox,
                 env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
                 capture_output=True, text=True, timeout=600,
             )

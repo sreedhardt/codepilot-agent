@@ -5,6 +5,7 @@ import pytest
 from codepilot.agents import TaskContext, make_pr_tool
 from codepilot.classifier import TaskType
 from codepilot.workspace import TaskWorkspace
+from tests.fakes import approve
 
 ARGS = {"summary": "Make search case-insensitive", "what_changed": ["Casefold in search"],
         "why": ["Users type lowercase"], "approach": "Normalize case before comparing."}
@@ -21,7 +22,10 @@ def workspace(tmp_path):
     return TaskWorkspace(7, runs_dir=tmp_path / "runs", source=repo)
 
 
-def make_tool(ws):
+def make_tool(ws, reviewed=True):
+    """The PR tool, with the sandbox's current change approved by a review unless `reviewed` is False."""
+    if reviewed:
+        approve(ws)
     ctx = TaskContext(7, "Search is case-sensitive", "https://example.com/7", "someone", TaskType.BUG_FIX)
     return make_pr_tool(ws, ctx, open_pr=False)
 
@@ -79,3 +83,15 @@ def test_possible_secret_blocks_the_pr_before_any_preview(workspace, monkeypatch
     assert held not in result
     assert not (workspace.working / "pr_plan.md").exists()
     assert [b.agent for b in workspace.shell.blocked] == ["pr_agent"]
+
+
+def test_pr_needs_an_approving_review_of_the_exact_current_change(workspace):
+    (workspace.sandbox / "app.py").write_text("def f():\n    # tidy\n    return 1\n")
+    unreviewed = make_tool(workspace, reviewed=False).invoke(ARGS)
+    assert unreviewed.startswith("NOT OPENED") and not (workspace.working / "pr_result.md").exists()
+
+    tool = make_tool(workspace)  # approved...
+    (workspace.sandbox / "app.py").write_text("def f():\n    # tidied again\n    return 1\n")  # ...then edited
+    assert tool.invoke(ARGS).startswith("NOT OPENED")
+
+    assert make_tool(workspace).invoke(ARGS).startswith("DRY RUN")  # re-reviewed: proceeds

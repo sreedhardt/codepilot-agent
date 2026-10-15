@@ -30,7 +30,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from codepilot import github_ops, secret_scan
+from codepilot import github_ops, review, secret_scan
 from codepilot.classifier import TaskType
 from codepilot.costs import BudgetExceeded, is_billing_error
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
@@ -121,9 +121,13 @@ what went wrong before. Each delegation automatically carries the current workin
 3. Delegate to `coder` with the task tool. Your instruction must contain the issue summary, the skill name, and
    the path /working/relevant_files.md. Pass file paths only; never paste file contents into a delegation.
 4. When the coder reports back, read /working/test_report.md and /working/proposed_diff.txt.
-5. Only if the test report says PASS and the diff is not empty, delegate to `pr_agent` with the task tool to open
-   the pull request. Do not ask it to resolve conflicts or retry if it reports FAILED.
-6. Read /working/pr_result.md: it is the authoritative outcome; never describe a PR as opened unless its first
+5. If the test report says PASS and the diff is not empty, call request_review. If it requests changes, delegate
+   to `coder` again with the reviewer's blocking findings (they are also in /working/review.md), then call
+   request_review again. There are at most 2 review rounds; if the last one still requests changes, stop and
+   end with VERDICT: FAILED and the findings.
+6. Only after a review approves the current change, delegate to `pr_agent` with the task tool to open the pull
+   request. Do not ask it to resolve conflicts or retry if it reports FAILED.
+7. Read /working/pr_result.md: it is the authoritative outcome; never describe a PR as opened unless its first
    line starts with PR_OPENED. End with one plain-text line, no markdown:
    `VERDICT: RESOLVED - <first line of pr_result.md>` when it starts with PR_OPENED or DRY RUN, otherwise
    `VERDICT: FAILED - <first line of pr_result.md, or your reason>`.
@@ -197,6 +201,35 @@ class TaskContext:
     task_type: TaskType
 
 
+class NotApproved(Exception):
+    """The PR tool was called for a change without an approving review."""
+
+
+def make_review_tool(ws: TaskWorkspace):
+    record = review.ReviewRecord(ws.working / "review.json")
+
+    @tool
+    def request_review() -> str:
+        """Have the independent Reviewer check the current change against the issue. A PR can only be opened
+        for a change whose latest review approved it; any edit after an approval needs a new review."""
+        rounds = record.rounds()
+        if len(rounds) >= review.MAX_REVIEW_ROUNDS:
+            return (f"NO MORE REVIEWS: the limit of {review.MAX_REVIEW_ROUNDS} rounds is reached and the last one "
+                    "requested changes. Stop and report FAILED with the reviewer's findings.")
+        diff = ws.diff()
+        if not diff:
+            return "Nothing to review: the sandbox has no changes."
+        passed, test_output = ws.run_tests()
+        if not passed:
+            return f"Not reviewed: the test suite fails. Have the coder fix it first.\n{test_output}"
+        result = review.review_change(_model(Role.REVIEWER), (ws.working / "task.md").read_text(), diff, test_output)
+        record.add(result, diff)
+        ws.write("review.md", review.render(result) + "\n")
+        return review.render(result) + f"\n(round {len(rounds) + 1} of {review.MAX_REVIEW_ROUNDS})"
+
+    return request_review
+
+
 def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
     @tool
     def open_pull_request(summary: str, what_changed: list[str], why: list[str], approach: str) -> str:
@@ -208,7 +241,11 @@ def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
         previous = ws.working / "pr_result.md"
         if previous.exists():
             return "ALREADY CALLED, nothing done. The recorded outcome is: " + previous.read_text().strip()
-        result = _open_pull_request(summary, what_changed, why, approach)
+        try:
+            result = _open_pull_request(summary, what_changed, why, approach)
+        except NotApproved:  # a precondition, not an outcome: unrecorded, so the PR can follow an approval
+            return ("NOT OPENED: the current change has no approving review. The Orchestrator must call "
+                    "request_review (again, if the change was edited after the last review).")
         ws.write("pr_result.md", result + "\n")
         return result
 
@@ -219,6 +256,8 @@ def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
         passed, test_output = ws.run_tests()
         if not passed:
             return f"FAILED: the test suite does not pass, so no PR was opened.\n{test_output}"
+        if not review.ReviewRecord(ws.working / "review.json").approves(ws.diff()):
+            raise NotApproved
 
         plan = github_ops.PullRequestPlan(
             branch=github_ops.branch_name(ctx.issue_number, ctx.title),
@@ -338,13 +377,9 @@ def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) ->
     @tool
     def write_diff_preview() -> str:
         """Write a unified diff of all changes to /working/proposed_diff.txt for the Orchestrator to review."""
-        diff = subprocess.run(["git", "diff"], cwd=ws.sandbox, capture_output=True, text=True).stdout
+        ws.write("proposed_diff.txt", ws.diff() or "(no changes)\n")
         untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=ws.sandbox,
                                    capture_output=True, text=True).stdout.split()
-        for path in untracked:
-            diff += subprocess.run(["git", "diff", "--no-index", "/dev/null", path], cwd=ws.sandbox,
-                                   capture_output=True, text=True).stdout
-        ws.write("proposed_diff.txt", diff or "(no changes)\n")
         stat = subprocess.run(["git", "diff", "--stat"], cwd=ws.sandbox, capture_output=True, text=True).stdout
         return f"Wrote /working/proposed_diff.txt\n{stat}" + (f"New files: {untracked}" if untracked else "")
 
@@ -390,6 +425,7 @@ def build_orchestrator(
     return create_deep_agent(
         model=_model(Role.ORCHESTRATOR),
         system_prompt=ORCHESTRATOR_PROMPT,
+        tools=[make_review_tool(ws)],
         backend=ws.orchestrator_backend(),
         subagents=build_team(ws, repo_map, ctx, index, open_pr, snapshot),
         middleware=[TodoListMiddleware(), *_memory(snapshot), *_middleware(Role.ORCHESTRATOR)],

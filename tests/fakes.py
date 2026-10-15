@@ -35,3 +35,10 @@ class ScriptedModel(BaseChatModel):
 
 def tool_call(name: str, args: dict, call_id: str) -> AIMessage:
     return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id, "type": "tool_call"}])
+
+
+def approve(ws) -> None:
+    """Record an approving review of the workspace's current diff, as the Reviewer would."""
+    from codepilot.review import Review, ReviewRecord
+
+    ReviewRecord(ws.working / "review.json").add(Review(verdict="approve", summary="ok", findings=[]), ws.diff())

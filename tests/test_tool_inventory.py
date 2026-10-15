@@ -16,7 +16,7 @@ from tests.fakes import ScriptedModel
 FILE_TOOLS = {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute", "task"}
 
 EXPECTED = {
-    "orchestrator": FILE_TOOLS | {"write_todos"},
+    "orchestrator": FILE_TOOLS | {"write_todos", "request_review"},
     "repo_explorer": FILE_TOOLS | {"find_relevant_files"},
     "coder": FILE_TOOLS | {"write_todos", "write_diff_preview"},
     "test_agent": FILE_TOOLS,
@@ -55,7 +55,8 @@ def test_no_agent_can_touch_github_except_through_open_pull_request(team):
     for agent, graph in team.items():
         for name in tools_of(graph):
             if github_words & set(name.split("_")):
-                assert (agent, name) == ("pr_agent", "open_pull_request")
+                # request_review asks the Reviewer model; it never calls GitHub (see codepilot/review.py)
+                assert (agent, name) in {("pr_agent", "open_pull_request"), ("orchestrator", "request_review")}
 
 
 def test_every_agent_with_a_shell_is_told_the_shell_rules():

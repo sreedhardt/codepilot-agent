@@ -13,7 +13,7 @@ from codepilot.agents import TaskContext, make_pr_tool
 from codepilot.classifier import TaskType
 from codepilot.gates import Decision, Gate, RetryGateMiddleware
 from codepilot.workspace import TaskWorkspace
-from tests.fakes import ScriptedModel, tool_call
+from tests.fakes import ScriptedModel, approve, tool_call
 
 
 def run_until_pause(agent, payload, cfg):
@@ -73,6 +73,7 @@ def fake_github(monkeypatch):
 
 
 def pr_agent_with_checkpointer(ws):
+    approve(ws)
     ctx = TaskContext(7, "Search is case-sensitive", "https://example.com/7", "someone", TaskType.BUG_FIX)
     args = {"summary": "Tidy f", "what_changed": ["Comment in f"], "why": ["Readability"], "approach": "Add a comment."}
     return create_deep_agent(

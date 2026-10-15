@@ -18,12 +18,13 @@ def delegate(agent: str, i: int) -> AIMessage:
 
 
 SCRIPTS = {
-    Role.ORCHESTRATOR: [delegate("repo_explorer", 1), delegate("coder", 2), delegate("pr_agent", 3),
-                        AIMessage(content="VERDICT: RESOLVED - DRY RUN: PR not opened")],
+    Role.ORCHESTRATOR: [delegate("repo_explorer", 1), delegate("coder", 2), tool_call("request_review", {}, "rv1"),
+                        delegate("pr_agent", 3), AIMessage(content="VERDICT: RESOLVED - DRY RUN: PR not opened")],
     Role.REPO_EXPLORER: [AIMessage(content="app.py - the function")],
     Role.CODER: [tool_call("edit_file", {"file_path": "/app.py", "old_string": "return 1", "new_string": "return 1  # ok"}, "e1"),
                  delegate("test_agent", 4), AIMessage(content="Fixed; tests pass.")],
     Role.TESTER: [AIMessage(content="PASS - 1 passed")],
+    Role.REVIEWER: [tool_call("Review", {"verdict": "approve", "summary": "Adds the comment.", "findings": []}, "r1")],
     Role.PR: [tool_call("open_pull_request", {"summary": "Annotate f", "what_changed": ["Comment in f"],
                                               "why": ["Clarity"], "approach": "Add a comment."}, "pr1"),
               AIMessage(content="DRY RUN: PR not opened")],
@@ -67,6 +68,7 @@ def test_full_team_dry_run(target, tmp_path):
     plan = (result.workspace.working / "pr_plan.md").read_text()
     assert "codepilot/issue-7-annotate-f" in plan and "fix(#7): Annotate f" in plan
     assert any("coder" in line and "edit_file" in line for line in logs)
+    assert "reviewer" in result.usage["agents"]  # the review is costed as its own line
 
 
 def test_full_team_run_uses_and_records_memory(target, tmp_path):
@@ -155,3 +157,15 @@ def test_missing_target_interpreter_stops_before_any_model_call(target, tmp_path
     with pytest.raises(FileNotFoundError, match="CODEPILOT_TARGET_PYTHON_BIN"):
         runner.run_issue(SimpleNamespace(number=7, title="t", body="b"), runner.RunOptions(runs_dir=tmp_path / "runs"),
                          runner.Callbacks(), TaskRegistry(tmp_path / "tasks.json"), classifier)
+
+
+def test_billing_failure_in_the_reviewer_still_pauses(target, tmp_path, monkeypatch):
+    scripted = agents._model
+    monkeypatch.setattr(agents, "_model", lambda role: OutOfCreditModel(script=SCRIPTS[role]) if role == Role.REVIEWER
+                        else scripted(role))
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    issue = SimpleNamespace(number=7, title="Annotate f", body="Please annotate f.",
+                            html_url="https://example.com/7", user=SimpleNamespace(login="someone"))
+    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs"),
+                              runner.Callbacks(), registry, FakeClassifier())
+    assert result.record.state == TaskState.FAILED and registry.get(7).billing_blocked

@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Working-memory files written only by CodePilot's code; agents may read them but never change them.
 RECORD_FILES = ["/task.md", "/repo_map.md", "/proposed_diff.txt", "/pr_plan.md", "/pr_result.md", "/pr.json",
                 "/approvals.jsonl", "/working_memory.json", "/working_memory.final.json", "/recent_sessions.md",
-                "/lessons.md"]
+                "/lessons.md", "/review.json", "/review.md"]
 RUNS_DIR = ROOT / "runs"
 
 
@@ -114,6 +114,16 @@ class TaskWorkspace:
             return False, f"could not run the test suite: {type(e).__name__}: {e}"
         tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
         return result.returncode == 0, tail
+
+    def diff(self) -> str:
+        """Unified diff of every sandbox change against HEAD, including new files."""
+        diff = subprocess.run(["git", "diff"], cwd=self.sandbox, capture_output=True, text=True).stdout
+        untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=self.sandbox,
+                                   capture_output=True, text=True).stdout.split()
+        for path in untracked:
+            diff += subprocess.run(["git", "diff", "--no-index", "/dev/null", path], cwd=self.sandbox,
+                                   capture_output=True, text=True).stdout
+        return diff
 
     def write(self, name: str, content: str) -> str:
         (self.working / name).write_text(content)

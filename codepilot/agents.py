@@ -30,13 +30,14 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from codepilot import github_ops
+from codepilot import github_ops, secret_scan
 from codepilot.classifier import TaskType
 from codepilot.costs import BudgetExceeded, is_billing_error
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
 from codepilot.memory.working import WorkingMemoryMiddleware
 from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
+from codepilot.sandbox import BlockedAction
 from codepilot.skills import Skill
 from codepilot.workspace import TaskWorkspace
 
@@ -227,6 +228,14 @@ def make_pr_tool(ws: TaskWorkspace, ctx: TaskContext, open_pr: bool):
             base_sha=github_ops.sandbox_head(ws.sandbox),
             changes=changes,
         )
+        # Before the preview is written, so a found secret is not copied into the workspace either.
+        findings = secret_scan.scan_change(ws.sandbox, {"PR title": plan.title, "PR body": plan.body,
+                                                        "commit message": plan.commit_message})
+        if findings:
+            report = "\n".join(f"- {f}" for f in findings[:20])
+            ws.shell.blocked.append(BlockedAction("pr_agent", "open pull request", f"possible secret: {findings[0]}"))
+            return ("BLOCKED: possible secrets in the change or PR text, so no PR was opened. Remove them; a human "
+                    f"must check whether they were real.\n{report}")
         ws.write("pr_plan.md", f"# Branch\n{plan.branch}\n\n# Commit message\n{plan.commit_message}\n\n"
                                 f"# Title\n{plan.title}\n\n# Labels\n{', '.join(github_ops.PR_LABELS)}\n\n"
                                 f"# Body\n{plan.body}\n")

@@ -68,3 +68,14 @@ def test_blocked_actions_name_the_agent_that_tried_them(workspace):
     assert [(b.agent, b.action.split()[0]) for b in workspace.shell.blocked] == [
         ("test_agent", "write"), ("orchestrator", "write"), ("coder", "git")]
     assert (workspace.working / "pr_result.md").read_text() == "DRY RUN\n"
+
+
+def test_possible_secret_blocks_the_pr_before_any_preview(workspace, monkeypatch):
+    held = "held" + "-value-" + "9f3k2m8q"
+    monkeypatch.setenv("GITHUB_TOKEN", held)
+    (workspace.sandbox / "app.py").write_text(f"def f():\n    # {held}\n    return 1\n")
+    result = make_tool(workspace).invoke(ARGS)
+    assert result.startswith("BLOCKED: possible secrets") and "app.py:2: value of $GITHUB_TOKEN" in result
+    assert held not in result
+    assert not (workspace.working / "pr_plan.md").exists()
+    assert [b.agent for b in workspace.shell.blocked] == ["pr_agent"]

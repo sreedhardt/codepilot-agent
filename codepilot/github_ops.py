@@ -142,6 +142,24 @@ def free_branch_name(repo: Repository, branch: str) -> str:
     return candidate
 
 
+def post_triage(issue, comment: str, label: str) -> str:
+    """Tell the reporter why CodePilot stopped and label the issue. Returns GitHub's updated_at afterwards.
+
+    The timestamp is read back from GitHub so that CodePilot's own comment and label do not count as the
+    reporter's reply (local and GitHub clocks can disagree).
+    """
+    issue.create_comment(comment)
+    issue.add_to_labels(label)
+    issue.update()
+    return issue.updated_at.isoformat()
+
+
+def clear_triage_labels(issue, labels) -> None:
+    """Drop labels from an earlier triage stop once the issue is accepted."""
+    for label in {lbl.name for lbl in issue.labels} & set(labels):
+        issue.remove_from_labels(label)
+
+
 def open_pull_request(repo: Repository, sandbox: Path, plan: PullRequestPlan, reviewer: str | None) -> str:
     """Create the branch, one commit and the PR. Returns the PR URL."""
     check_conflicts(repo, plan.base_sha, plan.changes)

@@ -3,7 +3,8 @@
 States follow the agent pipeline:
 
     TRIAGED -> EXPLORING -> IMPLEMENTING <-> TESTING -> PR_OPENED -> DONE
-                                  any state -> FAILED
+       |                          any state -> FAILED
+       +-> NEEDS_INFO | DECLINED   (triage stopped the task before any agent ran)
 
 The tracker derives state from what agents actually do (which subagent the
 Orchestrator delegates to, when the Coder hands off to the Test Agent) and
@@ -26,18 +27,23 @@ class TaskState(StrEnum):
     PR_OPENED = "PR_OPENED"
     DONE = "DONE"
     FAILED = "FAILED"
+    NEEDS_INFO = "NEEDS_INFO"
+    DECLINED = "DECLINED"
 
 
 TRANSITIONS: dict[TaskState, set[TaskState]] = {
-    TaskState.TRIAGED: {TaskState.EXPLORING, TaskState.IMPLEMENTING},
+    TaskState.TRIAGED: {TaskState.EXPLORING, TaskState.IMPLEMENTING, TaskState.NEEDS_INFO, TaskState.DECLINED},
     TaskState.EXPLORING: {TaskState.IMPLEMENTING},
     TaskState.IMPLEMENTING: {TaskState.TESTING, TaskState.PR_OPENED, TaskState.DONE},
     TaskState.TESTING: {TaskState.IMPLEMENTING, TaskState.PR_OPENED, TaskState.DONE},
     TaskState.PR_OPENED: {TaskState.DONE},
     TaskState.DONE: set(),
     TaskState.FAILED: set(),
+    TaskState.NEEDS_INFO: set(),
+    TaskState.DECLINED: set(),
 }
-TERMINAL = {TaskState.DONE, TaskState.FAILED}
+TERMINAL = {TaskState.DONE, TaskState.FAILED, TaskState.NEEDS_INFO, TaskState.DECLINED}
+TRIAGE_STOPS = {TaskState.NEEDS_INFO, TaskState.DECLINED}
 
 # Which delegation moves the task into which state.
 DELEGATION_STATES = {
@@ -66,6 +72,8 @@ class TaskRecord:
     retries_after_fail: int = 0
     cost_usd: float = 0.0
     billing_blocked: bool = False  # failed because the model provider refused calls for billing, not on its merits
+    issue_updated_at: str = ""  # GitHub's updated_at after triage stopped the task; a later edit re-triages it
+    notified: bool = False  # the triage comment was posted (not a dry run)
     pid: int = field(default_factory=os.getpid)  # the process running the task, to spot tasks orphaned by a crash
 
     def __post_init__(self) -> None:

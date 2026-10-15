@@ -20,7 +20,7 @@ from langgraph.types import Command
 from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
 from codepilot import github_ops
-from codepilot.classifier import PROVIDER_KWARGS, IssueClassifier, build_classifier
+from codepilot.classifier import PROVIDER_KWARGS, Classification, IssueClassifier, build_classifier
 from codepilot.costs import UsageTracker, is_billing_error
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
 from codepilot.memory.semantic import SemanticMemory, extract_lesson, render_lessons
@@ -30,6 +30,8 @@ from codepilot.repo_map import EmbeddingIndex, build_repo_map
 from codepilot.sandbox import BlockedAction
 from codepilot.skills import skill_for
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskTracker
+from codepilot.triage import LABELS as TRIAGE_LABELS
+from codepilot.triage import Triage, triage
 from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace, require_target_python
 
 CACHE = ROOT / ".codepilot_cache"
@@ -67,7 +69,7 @@ class RunResult:
     record: TaskRecord
     verdict: str
     seconds: float
-    workspace: TaskWorkspace
+    workspace: TaskWorkspace | None  # None when triage stopped the task
     blocked: list[BlockedAction] = field(default_factory=list)
     retries: list[tuple[str, str]] = field(default_factory=list)
     approvals: int = 0
@@ -91,6 +93,11 @@ def run_issue(
     usage = UsageTracker(options.max_cost_usd, None if options.max_minutes is None else options.max_minutes * 60)
 
     classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
+    decision = triage(classification)
+    if not decision.proceed:
+        return _stop_at_triage(issue, classification, decision, options, callbacks, registry, started)
+    if options.open_pr and hasattr(issue, "remove_from_labels"):
+        github_ops.clear_triage_labels(issue, TRIAGE_LABELS.values())
     skill = skill_for(classification.task_type)
     ws = TaskWorkspace(issue.number, runs_dir=options.runs_dir)
     workspace = ws.root.relative_to(ROOT) if ws.root.is_relative_to(ROOT) else ws.root
@@ -172,6 +179,25 @@ def run_issue(
     )
     (ws.root / "task.json").write_text(json.dumps(asdict(record), indent=1))
     return result
+
+
+def _stop_at_triage(issue, classification: Classification, decision: Triage, options: RunOptions,
+                     callbacks: Callbacks, registry: TaskRegistry, started: float) -> RunResult:
+    """End the task before any workspace or agent exists, telling the reporter why when PRs are enabled."""
+    record = TaskRecord(issue.number, issue.title, classification.task_type.value, "", "")
+    record.move(decision.state, decision.reason)
+    updated = getattr(issue, "updated_at", None)
+    record.issue_updated_at = updated.isoformat() if updated else ""
+    if options.open_pr and hasattr(issue, "create_comment"):
+        record.issue_updated_at = github_ops.post_triage(issue, decision.comment, TRIAGE_LABELS[decision.state])
+        record.notified = True
+        callbacks.log(f"#{issue.number} {decision.state}: {decision.reason} (commented and labelled)")
+    else:
+        callbacks.log(f"#{issue.number} {decision.state}: {decision.reason}\nDRY RUN: would comment:\n{decision.comment}")
+    registry.save(record)
+    callbacks.state(record)
+    return RunResult(record=record, verdict=f"TRIAGE: {decision.state} - {decision.reason}",
+                     seconds=time.monotonic() - started, workspace=None)
 
 
 def _previous_attempts(memory: Memory, issue_number: int) -> str:

@@ -105,7 +105,8 @@ def main() -> None:
             "cost_usd": result.usage.get("total_cost_usd", 0.0), "usage": result.usage,
             "fix_rounds": r.retries_after_fail, "model_retries": len(result.retries),
             "blocked": [f"[{b.agent}] {b.action}" for b in result.blocked],
-            **score(number, result.workspace.sandbox, out / "scoring"),
+            **(score(number, result.workspace.sandbox, out / "scoring") if result.workspace
+               else {"fixed": False, "acceptance": result.verdict, "files_changed": []}),
         }
         rows.append(row)
         (out / "results.jsonl").open("a").write(json.dumps(row) + "\n")

@@ -32,7 +32,8 @@ SCRIPTS = {
 
 class FakeClassifier:
     def classify(self, title, body):
-        return Classification(task_type=TaskType.BUG_FIX, confidence=0.9, rationale="test")
+        return Classification(task_type=TaskType.BUG_FIX, confidence=0.9, rationale="test", decision="accept",
+                              complexity=2, triage_reason="clear bug report", questions=[])
 
 
 @pytest.fixture

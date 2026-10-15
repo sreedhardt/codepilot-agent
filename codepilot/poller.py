@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from codepilot.tasks import TERMINAL, TaskRegistry, TaskState
+from codepilot.tasks import TERMINAL, TRIAGE_STOPS, TaskRegistry, TaskState
 
 DEFAULT_LABEL = "ai-assignable"
 
@@ -36,6 +36,13 @@ def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | No
         if config.open_pr and record.dry_run:
             return None
         return f"already handled ({record.pr_url or record.outcome})"
+    if record.state in TRIAGE_STOPS:
+        if config.open_pr and not record.notified:
+            return None  # decided in a dry run: the reporter was never told
+        updated = getattr(issue, "updated_at", None)
+        if updated and record.issue_updated_at and updated > datetime.fromisoformat(record.issue_updated_at):
+            return None  # edited or answered since triage: look again
+        return f"{record.state.lower().replace('_', ' ')} ({record.outcome[:80]}); waiting for the issue to change"
     if record.billing_blocked:
         return None  # never really attempted; take it again as soon as polling resumes
     failed_at = datetime.fromisoformat(record.history[-1][1])

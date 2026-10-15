@@ -79,3 +79,36 @@ def test_registry_round_trip_and_in_progress(tmp_path):
     assert reloaded.in_progress() == {2}
     assert reloaded.get(5).state == TaskState.DONE
     assert states(reloaded.get(5)) == ["TRIAGED", "IMPLEMENTING", "DONE"]
+
+
+def test_unfinished_tasks_of_exited_processes_are_failed_on_startup(tmp_path):
+    import subprocess
+    import sys
+
+    exited = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    orphan, live, done = record(pid=int(exited.stdout)), record(), record()
+    orphan.move(TaskState.EXPLORING)
+    orphan.move(TaskState.IMPLEMENTING)
+    orphan.active_agent = "coder"
+    live.issue_number, done.issue_number = 3, 4
+    done.move(TaskState.FAILED, "earlier failure")
+    for r in (orphan, live, done):
+        registry.save(r)
+
+    reloaded = TaskRegistry(tmp_path / "tasks.json")
+    assert [r.issue_number for r in reloaded.recover_stale()] == [2]
+    reloaded = TaskRegistry(tmp_path / "tasks.json")  # the recovery was persisted
+    assert reloaded.get(2).state == TaskState.FAILED and reloaded.get(2).active_agent == ""
+    assert reloaded.get(2).outcome == "interrupted: CodePilot stopped while the task was IMPLEMENTING"
+    assert reloaded.get(3).state == TaskState.TRIAGED  # owned by this live process: left alone
+    assert reloaded.get(4).outcome == "earlier failure"
+
+
+def test_records_written_before_pids_count_as_orphaned(tmp_path):
+    import json
+
+    (tmp_path / "tasks.json").write_text(json.dumps({"2": {
+        "issue_number": 2, "title": "t", "task_type": "bug_fix", "skill": "bug_fix_skill", "workspace": "runs/x",
+        "state": "TESTING", "history": [["TRIAGED", "2026-10-10T00:00:00+00:00"]]}}))
+    assert [r.issue_number for r in TaskRegistry(tmp_path / "tasks.json").recover_stale()] == [2]

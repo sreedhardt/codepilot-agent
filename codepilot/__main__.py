@@ -168,6 +168,8 @@ def main() -> None:
 
     options = RunOptions(open_pr=args.open_pr, recursion_limit=args.recursion_limit, watchdog_seconds=args.watchdog)
     callbacks, registry, repo = console_callbacks(args), TaskRegistry(REGISTRY_PATH), target_repo()
+    for record in registry.recover_stale():
+        print(f"recovered #{record.issue_number}: {record.outcome}")
     memory = open_memory(repo)
 
     def run_one(issue) -> None:

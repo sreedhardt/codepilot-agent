@@ -11,6 +11,7 @@ from the PR tool's recorded outcome, never from an agent's own claims.
 """
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -65,6 +66,7 @@ class TaskRecord:
     retries_after_fail: int = 0
     cost_usd: float = 0.0
     billing_blocked: bool = False  # failed because the model provider refused calls for billing, not on its merits
+    pid: int = field(default_factory=os.getpid)  # the process running the task, to spot tasks orphaned by a crash
 
     def __post_init__(self) -> None:
         if not self.history:
@@ -133,6 +135,7 @@ class TaskRegistry:
             for number, data in json.loads(path.read_text()).items():
                 data["state"] = TaskState(data["state"])
                 data["history"] = [tuple(h) for h in data["history"]]
+                data.setdefault("pid", 0)  # written before PIDs were recorded: owner unknown
                 self.records[int(number)] = TaskRecord(**data)
 
     def save(self, record: TaskRecord) -> None:
@@ -140,8 +143,36 @@ class TaskRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({n: asdict(r) for n, r in sorted(self.records.items())}, indent=1))
 
+    def recover_stale(self) -> list[TaskRecord]:
+        """Fail unfinished tasks whose process has exited, so they stop blocking their issue as "in progress".
+
+        They fail rather than restart at once: a task that crashed the process would otherwise crash it again
+        on every start. The poller retries them after the usual cooldown for failed tasks.
+        """
+        recovered = []
+        for record in self.records.values():
+            if record.state not in TERMINAL and not _alive(record.pid):
+                record.move(TaskState.FAILED, f"interrupted: CodePilot stopped while the task was {record.state}")
+                record.active_agent = ""
+                recovered.append(record)
+        if recovered:
+            self.save(recovered[0])
+        return recovered
+
     def in_progress(self) -> set[int]:
         return {n for n, r in self.records.items() if r.state not in TERMINAL}
 
     def get(self, issue_number: int) -> TaskRecord | None:
         return self.records.get(issue_number)
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)  # signal 0 only checks that the process exists
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    return True

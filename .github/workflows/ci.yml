@@ -1,0 +1,32 @@
+name: CI
+
+# Runs the unit tests on a clean machine. Deliberately minimal privileges: no secrets (the tests use scripted
+# models), a read-only token, and pull_request rather than pull_request_target, so fork PRs run without
+# access to anything in this repository.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install from the lockfile
+        run: uv sync --locked
+      - name: Run tests
+        run: uv run pytest -q

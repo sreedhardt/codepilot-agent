@@ -111,6 +111,9 @@ def main() -> None:
         (out / "results.jsonl").open("a").write(json.dumps(row) + "\n")
         print(f"#{number} {'FIXED' if row['fixed'] else 'NOT FIXED'} | {row['acceptance']} | "
               f"${row['cost_usd']:.3f} | {row['seconds']}s", flush=True)
+        if r.billing_blocked:
+            print("stopping: the model provider refused calls for billing; later issues would fail the same way")
+            break
 
     write_markdown(rows, out / "results.md")
     print((out / "results.md").read_text())

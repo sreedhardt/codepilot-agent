@@ -33,6 +33,8 @@ def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | No
         return f"already in progress ({record.state})"
     if record.state == TaskState.DONE:
         return f"already handled ({record.pr_url or record.outcome})"
+    if record.billing_blocked:
+        return None  # never really attempted; take it again as soon as polling resumes
     failed_at = datetime.fromisoformat(record.history[-1][1])
     if datetime.now(timezone.utc) - failed_at < timedelta(hours=config.retry_failed_after_hours):
         return f"failed recently ({record.outcome[:80]})"
@@ -48,6 +50,16 @@ def eligible_issues(issues: Iterable, registry: TaskRegistry, config: PollerConf
         else:
             picked.append(issue)
     return sorted(picked, key=lambda i: i.number)
+
+
+def billing_paused(issue, registry: TaskRegistry, log: Callable[[str], None]) -> bool:
+    """After a task, whether it failed on provider billing; every later task would fail the same way."""
+    record = registry.get(issue.number)
+    if record is None or not record.billing_blocked:
+        return False
+    log(f"poll: paused - the model provider refused calls for billing on #{issue.number}. "
+        "Add credits, then resume; the issue will be retried.")
+    return True
 
 
 def poll_forever(
@@ -69,6 +81,8 @@ def poll_forever(
             if skip_reason(issue, registry, config):  # re-check: a long task may have changed the registry
                 continue
             run_one(issue)
+            if billing_paused(issue, registry, log):
+                return
         if once:
             return
         log(f"poll: next check in {config.interval_minutes:g} min")

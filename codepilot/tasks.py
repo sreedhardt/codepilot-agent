@@ -64,6 +64,7 @@ class TaskRecord:
     active_agent: str = ""
     retries_after_fail: int = 0
     cost_usd: float = 0.0
+    billing_blocked: bool = False  # failed because the model provider refused calls for billing, not on its merits
 
     def __post_init__(self) -> None:
         if not self.history:

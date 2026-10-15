@@ -62,3 +62,20 @@ def test_deadline_stops_the_run_before_any_spend():
         team(usage(10, 1), usage(10, 1)).invoke({"messages": [{"role": "user", "content": "go"}]},
                                                {"callbacks": [tracker]})
     assert tracker.total_cost == 0
+
+
+def test_billing_errors_are_recognised_through_the_cause_chain():
+    from codepilot.costs import is_billing_error
+
+    anthropic = ("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': "
+                 "'Your credit balance is too low to access the Anthropic API.'}}")
+    try:
+        try:
+            raise ValueError(anthropic)
+        except ValueError as inner:
+            raise RuntimeError("subagent failed") from inner
+    except RuntimeError as wrapped:
+        assert is_billing_error(wrapped)
+    assert is_billing_error(RuntimeError("Error code: 429 - {'error': {'code': 'insufficient_quota'}}"))
+    assert not is_billing_error(RuntimeError("Error code: 429 - rate limit exceeded"))
+    assert not is_billing_error(None)

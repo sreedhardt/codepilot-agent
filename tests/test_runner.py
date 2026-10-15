@@ -113,3 +113,38 @@ def test_step_limits_outlast_model_call_caps(target, tmp_path):
         loop = [n for n in runnable.get_graph().nodes if not n.startswith("__") and not n.endswith(".before_agent")]
         # a run that uses its whole model-call cap must end by the cap, not by GraphRecursionError
         assert runnable.config["recursion_limit"] > MODEL_CALL_LIMITS[roles[sub["name"]]] * len(loop)
+
+
+BILLING = ("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': "
+           "'Your credit balance is too low to access the Anthropic API.'}}")
+
+
+class OutOfCreditModel(ScriptedModel):
+    def _generate(self, *args, **kwargs):
+        from langchain_core.exceptions import ModelInvalidRequestError
+        raise ModelInvalidRequestError(BILLING)
+
+
+def test_retry_predicate_retries_only_transient_failures():
+    from langchain_core.exceptions import ModelInvalidRequestError, ModelRateLimitError
+
+    should_retry, before = agents._retry_on(Role.CODER), len(agents.RETRY_LOG)
+    assert not should_retry(ModelInvalidRequestError(BILLING))
+    assert not should_retry(RuntimeError(BILLING))  # an unwrapped SDK error is still recognised
+    assert len(agents.RETRY_LOG) == before  # refused calls are not reported as retries
+    assert should_retry(ModelRateLimitError("Error code: 429 - rate limit exceeded"))
+    assert len(agents.RETRY_LOG) == before + 1
+
+
+def test_billing_failure_is_flagged_on_the_record(target, tmp_path, monkeypatch):
+    scripted = agents._model
+    monkeypatch.setattr(agents, "_model", lambda role: OutOfCreditModel(script=SCRIPTS[role]) if role == Role.CODER
+                        else scripted(role))
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    issue = SimpleNamespace(number=7, title="Annotate f", body="Please annotate f.",
+                            html_url="https://example.com/7", user=SimpleNamespace(login="someone"))
+    result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs"),
+                              runner.Callbacks(), registry, FakeClassifier())
+    assert result.record.state == TaskState.FAILED and "credit balance" in result.record.outcome
+    assert registry.get(7).billing_blocked
+    assert result.retries == []

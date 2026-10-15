@@ -28,6 +28,23 @@ class BudgetExceeded(RuntimeError):
     """The task ran past its deadline or cost budget."""
 
 
+# How providers say the account cannot pay: Anthropic answers 400 "credit balance is too low", OpenAI-compatible
+# APIs answer 429 "insufficient_quota", and some use HTTP 402.
+BILLING_MARKERS = ("credit balance is too low", "insufficient_quota", "payment required")
+
+
+def is_billing_error(exc: BaseException | None) -> bool:
+    """Whether a model call failed because the provider account is out of credit, anywhere in the cause chain.
+
+    No retry can succeed and every later task would fail the same way, so polling should pause instead.
+    """
+    while exc is not None:
+        if getattr(exc, "status_code", None) == 402 or any(m in str(exc).lower() for m in BILLING_MARKERS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 @dataclass
 class AgentUsage:
     model: str = ""

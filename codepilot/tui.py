@@ -21,7 +21,7 @@ from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static, TextArea
 
-from codepilot.poller import PollerConfig, skip_reason
+from codepilot.poller import PollerConfig, billing_paused, skip_reason
 from codepilot.runner import Callbacks, RunResult
 from codepilot.tasks import TERMINAL, TaskRecord, TaskRegistry, TaskState
 from codepilot.workspace import TaskWorkspace
@@ -156,6 +156,7 @@ class CodePilotApp(App):
                 self._ui(self.log_line, f"poll failed: {type(e).__name__}: {e}")
                 self.issues = []
             self._ui(self.refresh_issues)
+            paused = False
             for issue in self.issues:
                 if self.stop.is_set():
                     return
@@ -163,9 +164,15 @@ class CodePilotApp(App):
                 if issue.number in self.skipped or skip_reason(issue, self.registry, self.config):
                     continue
                 self._run(issue, self.open_pr)
-            self._ui(self.log_line, f"poll: next check in {self.config.interval_minutes:g} min "
-                                                 "(press p to poll now)")
-            self.poll_now.wait(self.config.interval_minutes * 60)
+                if paused := billing_paused(issue, self.registry, lambda line: self._ui(self.log_line, line)):
+                    break
+            if paused:
+                self._ui(self.log_line, "poll: press p to resume once credits are added")
+                self.poll_now.wait()
+            else:
+                self._ui(self.log_line, f"poll: next check in {self.config.interval_minutes:g} min "
+                                                     "(press p to poll now)")
+                self.poll_now.wait(self.config.interval_minutes * 60)
             self.poll_now.clear()
 
     def _drain_local_tasks(self) -> None:

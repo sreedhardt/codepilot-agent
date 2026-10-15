@@ -21,7 +21,7 @@ from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
 from codepilot import github_ops
 from codepilot.classifier import PROVIDER_KWARGS, IssueClassifier, build_classifier
-from codepilot.costs import UsageTracker
+from codepilot.costs import UsageTracker, is_billing_error
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
 from codepilot.memory.semantic import SemanticMemory, extract_lesson, render_lessons
 from codepilot.memory.working import WorkingMemory
@@ -142,6 +142,7 @@ def run_issue(
             payload = Command(resume={p.id: callbacks.approve(p.value, ws) for p in pending})
     except Exception as e:  # noqa: BLE001 - one broken task must not stop the poller or the TUI
         error = f"{type(e).__name__}: {e}"
+        record.billing_blocked = is_billing_error(e)
         callbacks.log(f"ERROR {error}\n{traceback.format_exc(limit=5)}")
     finally:
         if options.watchdog_seconds:

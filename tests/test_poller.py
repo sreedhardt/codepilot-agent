@@ -12,11 +12,12 @@ def issue(number, labels=("ai-assignable",), assignees=(), pull_request=None):
                            assignees=list(assignees), pull_request=pull_request)
 
 
-def finished(registry, number, state, hours_ago=0.0, pr_url=None):
+def finished(registry, number, state, hours_ago=0.0, pr_url=None, billing_blocked=False):
     r = TaskRecord(number, "t", "bug_fix", "bug_fix_skill", "runs/x")
     r.move(TaskState.IMPLEMENTING)
     r.move(state, "outcome")
     r.pr_url = pr_url
+    r.billing_blocked = billing_blocked
     r.history[-1] = (state.value, (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat())
     registry.save(r)
 
@@ -56,3 +57,16 @@ def test_poll_once_runs_each_eligible_issue_one_at_a_time(tmp_path):
     assert ran == [1, 2]
     poll_forever(lambda: [issue(2), issue(1)], run_one, registry, CONFIG, log=lambda s: None, once=True)
     assert ran == [1, 2]  # second cycle: both already handled
+
+
+def test_billing_failure_pauses_polling_and_keeps_the_issue_eligible(tmp_path):
+    registry, ran, logs = TaskRegistry(tmp_path / "tasks.json"), [], []
+
+    def run_one(i):
+        ran.append(i.number)
+        finished(registry, i.number, TaskState.FAILED, billing_blocked=True)
+
+    poll_forever(lambda: [issue(1), issue(2)], run_one, registry, CONFIG, log=logs.append)  # not once: must return
+    assert ran == [1]  # #2 would fail the same way, so it is not started
+    assert logs[-1].startswith("poll: paused")
+    assert skip_reason(issue(1), registry, CONFIG) is None  # retried as soon as polling resumes

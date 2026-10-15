@@ -32,7 +32,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from codepilot import github_ops
 from codepilot.classifier import TaskType
-from codepilot.costs import BudgetExceeded
+from codepilot.costs import BudgetExceeded, is_billing_error
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
 from codepilot.memory.working import WorkingMemoryMiddleware
 from codepilot.models import Role, build_model, model_spec
@@ -78,13 +78,16 @@ RETRY_LOG: list[tuple[str, str]] = []
 
 
 def _retry_on(role: Role):
-    """Retry any model failure (stalled streams, timeouts, rejected tool calls), recording each one."""
+    """Retry transient model failures (stalled streams, timeouts, rejected tool calls), recording each retry.
+
+    Budget and billing failures are final: retrying would hit the same limit.
+    """
     def should_retry(exc: Exception) -> bool:
-        if isinstance(exc, BudgetExceeded):
-            return False  # the budget is spent; retrying would hit the same limit
+        if isinstance(exc, BudgetExceeded) or is_billing_error(exc) or not default_retry_on(exc):
+            return False
         RETRY_LOG.append((role.value, f"{type(exc).__name__}: {str(exc)[:120]}"))
         logger.warning("model call failed for %s, retrying: %s", role.value, type(exc).__name__)
-        return default_retry_on(exc)
+        return True
     return should_retry
 
 

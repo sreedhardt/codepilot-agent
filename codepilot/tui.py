@@ -31,6 +31,7 @@ LOCAL_TASK_START = 10_000  # numbers for free-form tasks typed in the TUI, clear
 STATE_ICONS = {
     TaskState.DONE: "✓", TaskState.FAILED: "✗", TaskState.PR_OPENED: "↑",
     TaskState.TRIAGED: "⟳", TaskState.EXPLORING: "⟳", TaskState.IMPLEMENTING: "⟳", TaskState.TESTING: "⟳",
+    TaskState.NEEDS_INFO: "?", TaskState.DECLINED: "⊘",
 }
 
 
@@ -229,7 +230,8 @@ class CodePilotApp(App):
                         style="" if not reason else "dim")
         icon = STATE_ICONS.get(record.state, "?")
         detail = f"PR #{record.pr_url.rsplit('/', 1)[1]}" if record.pr_url else record.state.value
-        style = {TaskState.DONE: "green", TaskState.FAILED: "red"}.get(record.state, "yellow")
+        style = {TaskState.DONE: "green", TaskState.FAILED: "red", TaskState.NEEDS_INFO: "cyan",
+                 TaskState.DECLINED: "dim"}.get(record.state, "yellow")
         return Text(f"#{issue.number} {icon} {detail}  {title}", style=style)
 
     def show_task(self, record: TaskRecord) -> None:

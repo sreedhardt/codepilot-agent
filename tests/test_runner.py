@@ -183,3 +183,10 @@ def test_a_classifier_failure_fails_the_task_without_crashing(target, tmp_path):
     result = runner.run_issue(issue, runner.RunOptions(runs_dir=tmp_path / "runs"), runner.Callbacks(), registry, Broken())
     assert result.record.state == TaskState.FAILED and result.record.outcome.startswith("classification failed")
     assert registry.get(7).billing_blocked  # out of quota: polling pauses instead of failing every issue
+
+
+def test_each_task_is_one_named_trace(tmp_path):
+    ws = SimpleNamespace(root=tmp_path / "issue-7-20261016")
+    config = runner.trace_config(7, "bug_fix", ws)
+    assert config["run_name"] == "CodePilot issue #7" and "bug_fix" in config["tags"]
+    assert config["metadata"] == {"issue": 7, "task_type": "bug_fix", "workspace": "issue-7-20261016"}

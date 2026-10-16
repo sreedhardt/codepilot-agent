@@ -152,7 +152,7 @@ def run_issue(
                                    open_pr=options.open_pr, snapshot=snapshot)
         limit = options.recursion_limit or agents.step_limit(agent, Role.ORCHESTRATOR)
         config = {"recursion_limit": limit, "configurable": {"thread_id": ws.root.name},
-                  "callbacks": [usage]}
+                  "callbacks": [usage], **trace_config(issue.number, classification.task_type.value, ws)}
         payload = {"messages": [{"role": "user",
                                  "content": f"Resolve issue #{issue.number}. Start with /working/task.md."}]}
         while True:
@@ -192,6 +192,13 @@ def run_issue(
     )
     (ws.root / "task.json").write_text(json.dumps(asdict(record), indent=1))
     return result
+
+
+def trace_config(issue_number: int, task_type: str, ws: TaskWorkspace) -> dict:
+    """Name, tags and metadata for the task's root run, so each issue is one findable trace in LangSmith
+    (LANGSMITH_TRACING=true); every agent, subagent and tool call nests under it."""
+    return {"run_name": f"CodePilot issue #{issue_number}", "tags": ["codepilot", task_type],
+            "metadata": {"issue": issue_number, "task_type": task_type, "workspace": ws.root.name}}
 
 
 def _classification_failed(issue, error: Exception, callbacks: Callbacks, registry: TaskRegistry,

@@ -1,10 +1,11 @@
 """Evaluate the Reviewer gate on frozen changes: real fixes it should approve, flawed ones it should block.
 
-    uv run python evals/review_eval.py [--repeats 2]
+    uv run python evals/review_eval.py [--repeats 2] [--cases inject-1 debug-1]
 
 Cases live in evals/review_cases/: fixes from evaluation runs that passed the hidden acceptance tests, one real
 run that missed part of its issue, and copies of good fixes with a flaw inserted (debug output, a weakened or
-skipped test, an unrelated destructive script). Reports blocks caught, good fixes wrongly blocked, and cost.
+skipped test, an unrelated destructive script, a comment telling the reviewer to approve). Reports blocks
+caught, good fixes wrongly blocked, and cost.
 """
 
 import argparse
@@ -28,8 +29,10 @@ TESTS = "All tests pass."
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=1, help="Review each case N times to measure consistency")
+    parser.add_argument("--cases", nargs="+", help="Only these case ids")
     args = parser.parse_args()
-    cases = [json.loads(p.read_text()) for p in sorted((ROOT / "evals" / "review_cases").glob("*.json"))]
+    cases = [json.loads(p.read_text()) for p in sorted((ROOT / "evals" / "review_cases").glob("*.json"))
+             if not args.cases or p.stem in args.cases]
     usage = UsageTracker(None, None)
     model = build_model(Role.REVIEWER, max_tokens=4000, callbacks=[usage])
     print(f"Reviewer: {model_spec(Role.REVIEWER)} | {len(cases)} cases x {args.repeats}\n")

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from codepilot.poller import PollerConfig, eligible_issues, poll_forever, skip_reason
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskState
 
-CONFIG = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24)
+CONFIG = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, take_unlabelled=False)
 
 
 def issue(number, labels=("ai-assignable",), assignees=(), pull_request=None):
@@ -79,8 +79,16 @@ def test_dry_run_results_are_previews_only_when_opening_prs(tmp_path):
     r.move(TaskState.DONE, "DRY RUN: PR not opened (run with --open-pr).")
     registry.save(r)
     finished(registry, 4, TaskState.DONE, pr_url="https://example.com/pr/4")
-    opening = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, open_pr=True)
+    opening = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, open_pr=True,
+                           take_unlabelled=False)
 
     assert skip_reason(issue(3), registry, CONFIG).startswith("already handled")  # no rerun on every dry-run poll
     assert skip_reason(issue(3), registry, opening) is None
     assert skip_reason(issue(4), registry, opening).startswith("already handled")  # a real PR is never redone
+
+
+def test_unassigned_unlabelled_issues_are_taken_when_enabled(tmp_path):
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    wide = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, take_unlabelled=True)
+    assert skip_reason(issue(1, labels=()), registry, wide) is None
+    assert skip_reason(issue(2, labels=(), assignees=["dev"]), registry, wide) == "assigned to a human"

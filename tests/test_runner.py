@@ -171,3 +171,15 @@ def test_billing_failure_in_the_reviewer_still_pauses(target, tmp_path, monkeypa
     result = runner.run_issue(issue, runner.RunOptions(watchdog_seconds=None, runs_dir=tmp_path / "runs"),
                               runner.Callbacks(), registry, FakeClassifier())
     assert result.record.state == TaskState.FAILED and registry.get(7).billing_blocked
+
+
+def test_a_classifier_failure_fails_the_task_without_crashing(target, tmp_path):
+    class Broken:
+        def classify(self, title, body):
+            raise RuntimeError("Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    issue = SimpleNamespace(number=7, title="t", body="b", html_url="u", user=None)
+    result = runner.run_issue(issue, runner.RunOptions(runs_dir=tmp_path / "runs"), runner.Callbacks(), registry, Broken())
+    assert result.record.state == TaskState.FAILED and result.record.outcome.startswith("classification failed")
+    assert registry.get(7).billing_blocked  # out of quota: polling pauses instead of failing every issue

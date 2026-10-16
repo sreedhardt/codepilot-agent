@@ -8,8 +8,9 @@ without touching the Orchestrator.
 from enum import StrEnum
 from typing import Literal, Protocol
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from codepilot.models import Role, build_model, model_spec
 
@@ -27,7 +28,7 @@ class Classification(BaseModel):
     confidence: float = Field(ge=0, le=1, description="How sure you are of the task type, from 0 to 1")
     rationale: str = Field(description="One sentence naming the deciding evidence in the issue")
     decision: Literal["accept", "clarify", "reject"] = Field(description="Triage decision")
-    complexity: int = Field(ge=1, le=5, description="Size of the work, 1 (one line) to 5 (architectural)")
+    complexity: int = Field(ge=1, le=10, description="Size of the work, 1 (one line) to 10 (architectural)")
     triage_reason: str = Field(description="One sentence explaining the triage decision")
     questions: list[str] = Field(description="For clarify: the specific questions the reporter must answer; "
                                              "otherwise empty")
@@ -65,8 +66,8 @@ Otherwise:
 - reject: not a change to this repository (support questions, open-ended discussions) or out of scope
   (rewrites, new services, infrastructure or deployment work).
 
-Complexity: 1 a one-line fix; 2 one function; 3 a few files with new tests; 4 a cross-cutting change across
-many modules; 5 an architectural change.
+Complexity, 1 to 10: 1-2 a one-line or trivial fix; 3-4 one function and its tests; 5-6 a few files with new
+tests; 7-8 a cross-cutting change across many modules; 9-10 an architectural change or a new system.
 
 Issue title: {title}
 
@@ -82,15 +83,20 @@ PROVIDER_KWARGS = {
 
 class LLMIssueClassifier:
     def __init__(self, model: BaseChatModel, *, structured_method: str | None = None) -> None:
-        kwargs = {"method": structured_method} if structured_method else {}
+        kwargs = {"method": structured_method, "strict": True} if structured_method else {}
         self._chain = model.with_structured_output(Classification, **kwargs)
 
     def classify(self, title: str, body: str) -> Classification:
-        return self._chain.invoke(PROMPT.format(title=title, body=body or "(empty)"))
+        prompt = PROMPT.format(title=title, body=body or "(empty)")
+        try:
+            return self._chain.invoke(prompt)
+        except (OutputParserException, ValidationError):  # malformed output: one more try, then give up
+            return self._chain.invoke(prompt)
 
 
 def build_classifier() -> IssueClassifier:
     provider = model_spec(Role.CLASSIFIER).partition(":")[0]
     model = build_model(Role.CLASSIFIER, **PROVIDER_KWARGS.get(provider, {}))
-    # Groq's gpt-oss models support strict JSON-schema output, which guarantees a valid label.
+    # Groq's gpt-oss models support strict JSON-schema output; without strict=True they sometimes echo the
+    # schema's wrapper ({"properties": {...}}) instead of the object.
     return LLMIssueClassifier(model, structured_method="json_schema" if provider == "groq" else None)

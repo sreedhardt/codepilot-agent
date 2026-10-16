@@ -29,7 +29,8 @@ from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, build_repo_map
 from codepilot.sandbox import BlockedAction
 from codepilot.skills import skill_for
-from codepilot.tasks import TaskRecord, TaskRegistry, TaskTracker
+from codepilot.tasks import TaskRecord, TaskRegistry, TaskState, TaskTracker
+from codepilot.poller import PollerConfig, opted_in
 from codepilot.triage import LABELS as TRIAGE_LABELS
 from codepilot.triage import Triage, triage
 from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace, require_target_python
@@ -92,8 +93,11 @@ def run_issue(
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)
     usage = UsageTracker(options.max_cost_usd, None if options.max_minutes is None else options.max_minutes * 60)
 
-    classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
-    decision = triage(classification)
+    try:
+        classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
+    except Exception as e:  # noqa: BLE001 - one unclassifiable issue must not stop the poller or the TUI
+        return _classification_failed(issue, e, callbacks, registry, started)
+    decision = triage(classification, opted_in(issue, PollerConfig().label))
     if not decision.proceed:
         return _stop_at_triage(issue, classification, decision, options, callbacks, registry, started)
     if options.open_pr and hasattr(issue, "remove_from_labels"):
@@ -181,6 +185,18 @@ def run_issue(
     return result
 
 
+def _classification_failed(issue, error: Exception, callbacks: Callbacks, registry: TaskRegistry,
+                           started: float) -> RunResult:
+    record = TaskRecord(issue.number, issue.title, "unclassified", "", "")
+    record.billing_blocked = is_billing_error(error)
+    record.move(TaskState.FAILED, f"classification failed: {type(error).__name__}: {str(error)[:200]}")
+    callbacks.log(f"#{issue.number} {record.outcome}")
+    registry.save(record)
+    callbacks.state(record)
+    return RunResult(record=record, verdict=f"FAILED - {record.outcome}", seconds=time.monotonic() - started,
+                     workspace=None)
+
+
 def _stop_at_triage(issue, classification: Classification, decision: Triage, options: RunOptions,
                      callbacks: Callbacks, registry: TaskRegistry, started: float) -> RunResult:
     """End the task before any workspace or agent exists, telling the reporter why when PRs are enabled."""
@@ -188,12 +204,15 @@ def _stop_at_triage(issue, classification: Classification, decision: Triage, opt
     record.move(decision.state, decision.reason)
     updated = getattr(issue, "updated_at", None)
     record.issue_updated_at = updated.isoformat() if updated else ""
-    if options.open_pr and hasattr(issue, "create_comment"):
+    if options.open_pr and decision.comment and hasattr(issue, "create_comment"):
         record.issue_updated_at = github_ops.post_triage(issue, decision.comment, TRIAGE_LABELS[decision.state])
         record.notified = True
         callbacks.log(f"#{issue.number} {decision.state}: {decision.reason} (commented and labelled)")
-    else:
+    elif decision.comment:
         callbacks.log(f"#{issue.number} {decision.state}: {decision.reason}\nDRY RUN: would comment:\n{decision.comment}")
+    else:
+        record.notified = True  # nothing to tell: not opted in, so no comment is owed and none will be posted
+        callbacks.log(f"#{issue.number} {decision.state}: {decision.reason} (not opted in: no comment)")
     registry.save(record)
     callbacks.state(record)
     return RunResult(record=record, verdict=f"TRIAGE: {decision.state} - {decision.reason}",

@@ -17,12 +17,12 @@ def assessed(decision="accept", complexity=2, confidence=0.9, questions=()):
 
 def test_policy_proceeds_only_on_confident_accepted_small_work():
     assert triage(assessed()).proceed
-    assert triage(assessed(complexity=4)).proceed
+    assert triage(assessed(complexity=8)).proceed
     declined = triage(assessed(decision="reject"))
     assert (declined.proceed, declined.state) == (False, TaskState.DECLINED)
     clarify = triage(assessed(decision="clarify", questions=["Which endpoint?", "What did you expect?"]))
     assert clarify.state == TaskState.NEEDS_INFO and "- Which endpoint?\n- What did you expect?" in clarify.comment
-    assert triage(assessed(complexity=5)).state == TaskState.DECLINED  # accepted by the model, too big for policy
+    assert triage(assessed(complexity=9)).state == TaskState.DECLINED  # accepted by the model, too big for policy
     assert triage(assessed(confidence=0.4)).state == TaskState.NEEDS_INFO
     assert "codepilot-needs-info" in clarify.comment
 
@@ -44,7 +44,7 @@ class FakeIssue(SimpleNamespace):
 
 
 T0 = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-CONFIG = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24)
+CONFIG = PollerConfig(interval_minutes=5, label="ai-assignable", retry_failed_after_hours=24, take_unlabelled=False)
 
 
 def issue():
@@ -94,3 +94,38 @@ def test_accepting_later_clears_the_old_triage_label(tmp_path, monkeypatch):
     with pytest.raises(StopHere):
         run(i, tmp_path, assessed(), open_pr=True)
     assert [lbl.name for lbl in i.labels] == ["ai-assignable"]
+
+
+def test_issues_nobody_opted_in_get_a_lower_limit_and_no_comment():
+    small, medium = triage(assessed(complexity=4), opted_in=False), triage(assessed(complexity=5), opted_in=False)
+    assert small.proceed and not medium.proceed and medium.comment == ""
+    assert triage(assessed(decision="clarify", questions=["Which page?"]), opted_in=False).comment == ""
+    assert triage(assessed(complexity=5)).proceed  # the same issue, labelled, proceeds
+
+
+def test_unlabelled_stop_posts_nothing_and_is_not_retried_every_cycle(tmp_path):
+    i = issue()
+    i.labels = []  # picked up without the label
+    result, registry = run(i, tmp_path, assessed(complexity=6), open_pr=True)
+    assert result.record.state == TaskState.DECLINED and i.comments == [] and i.labels == []
+    opening = PollerConfig(open_pr=True, label="ai-assignable", take_unlabelled=True)
+    assert skip_reason(i, registry, opening).startswith("declined")
+
+
+def test_malformed_classifier_output_is_retried_once():
+    from langchain_core.exceptions import OutputParserException
+
+    from codepilot.classifier import LLMIssueClassifier
+
+    replies = iter([OutputParserException("echoed the schema"), assessed()])
+
+    class Chain:
+        def invoke(self, prompt):
+            reply = next(replies)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    classifier = LLMIssueClassifier.__new__(LLMIssueClassifier)
+    classifier._chain = Chain()
+    assert classifier.classify("t", "b").decision == "accept"

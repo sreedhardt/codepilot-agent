@@ -319,7 +319,7 @@ class CodePilotApp(App):
                 return
             title, _, body = text.partition("\n")
             task = SimpleNamespace(number=self.next_local, title=title[:120], body=body or title, html_url="",
-                                   user=None, labels=[], assignees=[], pull_request=None)
+                                   user=None, labels=[], assignees=[], pull_request=None, local=True)
             self.next_local += 1
             self.local_tasks.put(task)
             self.log_line(f"queued local task #{task.number}: {task.title} (dry run: no issue for a PR to close)")

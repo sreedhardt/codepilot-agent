@@ -15,8 +15,15 @@ DEFAULT_LABEL = "ai-assignable"
 class PollerConfig:
     interval_minutes: float = float(os.getenv("CODEPILOT_POLL_MINUTES", "5"))
     label: str = os.getenv("CODEPILOT_ISSUE_LABEL", DEFAULT_LABEL)
+    # Unassigned issues without the label are taken too, under the stricter unlabelled complexity limit.
+    take_unlabelled: bool = os.getenv("CODEPILOT_TAKE_UNLABELLED", "true").lower() == "true"
     retry_failed_after_hours: float = float(os.getenv("CODEPILOT_RETRY_FAILED_AFTER_HOURS", "24"))
     open_pr: bool = False  # when PRs are opened, a dry-run result is only a preview and the issue is taken again
+
+
+def opted_in(issue, label: str = DEFAULT_LABEL) -> bool:
+    """Someone asked CodePilot to handle this: it carries the label, or it was typed into the TUI."""
+    return getattr(issue, "local", False) or label in {lbl.name for lbl in getattr(issue, "labels", [])}
 
 
 def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | None:
@@ -25,7 +32,7 @@ def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | No
         return "is a pull request"
     if issue.assignees:
         return "assigned to a human"
-    if config.label not in {label.name for label in issue.labels}:
+    if not config.take_unlabelled and not opted_in(issue, config.label):
         return f"not labelled {config.label}"
     record = registry.get(issue.number)
     if record is None:
@@ -84,7 +91,8 @@ def poll_forever(
     """Each cycle: list open issues, run the eligible ones one at a time, then sleep until the next cycle."""
     stop = stop or threading.Event()
     while not stop.is_set():
-        log(f"poll: checking open issues labelled {config.label}")
+        log(f"poll: checking open issues labelled {config.label}"
+            + (" and other unassigned issues" if config.take_unlabelled else ""))
         for issue in eligible_issues(list_issues(), registry, config, log):
             if stop.is_set():
                 break

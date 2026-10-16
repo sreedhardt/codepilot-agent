@@ -30,6 +30,7 @@ class Gate(StrEnum):
     GIT_PUSH = "git_push"
     RETRY_AFTER_FAILURES = "retry_after_failures"
     REVIEW_OVERRULE = "review_overrule"
+    BLOCKED_OPERATION = "blocked_operation"
 
 
 @dataclass

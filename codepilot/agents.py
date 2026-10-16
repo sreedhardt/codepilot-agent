@@ -37,7 +37,7 @@ from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, reque
 from codepilot.memory.working import WorkingMemoryMiddleware
 from codepilot.models import Role, build_model, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
-from codepilot.sandbox import BlockedAction
+from codepilot.sandbox import BlockedAction, check_command, is_git_push
 from codepilot.skills import Skill
 from codepilot.workspace import TaskWorkspace
 
@@ -164,7 +164,9 @@ Shell commands already run in the repository root: use relative paths and never 
 7. Call write_diff_preview, then reply with: root cause, files changed, tests added, verification result.
 
 
-""" + SHELL_RULES
+""" + SHELL_RULES + """
+- Only if a blocked command is truly necessary, call ask_human_to_run with the exact command and why; a human
+  decides and an approved command runs once. Never try variations to get around a block."""
 
 TESTER_PROMPT = """You are the Test Agent. You verify a change the Coder made, independently.
 
@@ -394,6 +396,33 @@ def build_tester(ws: TaskWorkspace) -> CompiledSubAgent:
     )
 
 
+def make_escalation_tool(ws: TaskWorkspace):
+    @tool
+    def ask_human_to_run(command: str, reason: str) -> str:
+        """Ask a human to approve ONE run of a shell command the guardrail blocked. Use only when the task truly
+        needs it; `reason` must explain what the command does and why no allowed command would work."""
+        # Re-run on resume: only checks before the human answers, so an approved command runs exactly once.
+        verdict = check_command(command, ws.sandbox)
+        if verdict.allowed:
+            return "Not needed: this command is allowed. Run it with execute."
+        if is_git_push(command):
+            return "Not here: run git push with execute; it has its own approval gate."
+        if verdict.hard:
+            return f"Cannot be approved: {verdict.reason}. Commands never reach outside the sandbox."
+        decision = request_approval(
+            [Gate.BLOCKED_OPERATION],
+            f"The Coder asks to run a blocked command once: `{command}`",
+            {"command": command, "blocked_because": verdict.reason, "coder_reason": reason},
+            ws.approvals,
+        )
+        if not decision.approved:
+            return f"REJECTED by human: the command was not run. {decision.note}".strip()
+        result = ws.shell.run_once(command)
+        return f"APPROVED by human and run once (exit code {result.exit_code}):\n{result.output}"
+
+    return ask_human_to_run
+
+
 def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) -> CompiledSubAgent:
     @tool
     def write_diff_preview() -> str:
@@ -406,7 +435,7 @@ def build_coder(ws: TaskWorkspace, snapshot: Callable[[], str] | None = None) ->
 
     agent = create_deep_agent(
         model=_model(Role.CODER),
-        tools=[write_diff_preview],
+        tools=[write_diff_preview, make_escalation_tool(ws)],
         system_prompt=CODER_PROMPT,
         backend=ws.coder_backend(),
         skills=["/skills/"],

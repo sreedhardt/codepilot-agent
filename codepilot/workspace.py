@@ -71,6 +71,7 @@ class TaskWorkspace:
             env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
             push_approver=self._approve_push,
             agent="coder",
+            can_escalate=True,
         )
 
     def _approve_push(self, command: str) -> bool:

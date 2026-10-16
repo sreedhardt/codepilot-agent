@@ -161,3 +161,20 @@ def test_record_files_are_read_only_for_agents(tmp_path):
     assert "BLOCKED" in working.write("/approvals.jsonl", "{}").error
     assert (tmp_path / "pr_result.md").read_text() == "DRY RUN\n"
     assert working.write("/test_report.md", "PASS").error is None  # agent-owned files stay writable
+
+
+@pytest.mark.parametrize("command", ["cat /etc/passwd", "ls; cat ~/.ssh/id_rsa", "grep x ../outside", "pytest --rootdir=/"])
+def test_commands_reaching_outside_the_sandbox_are_hard_blocked(command):
+    verdict = check_command(command, ROOT)
+    assert not verdict.allowed and verdict.hard
+
+
+@pytest.mark.parametrize("command", ["curl https://example.com", "rm -rf build", "pip install requests", "ls && pwd"])
+def test_other_blocked_commands_can_be_escalated_to_a_human(command):
+    verdict = check_command(command, ROOT)
+    assert not verdict.allowed and not verdict.hard
+
+
+def test_run_once_still_refuses_to_leave_the_sandbox(tmp_path):
+    backend = GuardedShellBackend(tmp_path)
+    assert backend.run_once("cat /etc/passwd").exit_code == 126

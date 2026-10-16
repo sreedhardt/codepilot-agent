@@ -43,6 +43,7 @@ class BlockedAction:
 class Verdict:
     allowed: bool
     reason: str = ""
+    hard: bool = False  # never runs, even with a human's approval (it reaches outside the sandbox)
 
 
 def is_git_push(command: str) -> bool:
@@ -56,8 +57,28 @@ def is_git_push(command: str) -> bool:
     return argv[:2] == ["git", "push"]
 
 
+def escapes_sandbox(command: str, root: Path) -> str | None:
+    """Why a command reaches outside the sandbox, or None. Checks every word, including chained commands."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError as e:
+        return f"could not parse command: {e}"
+    for word in words:
+        # Check option values too: --rootdir=/ names a path as surely as / does.
+        for part in (word, word.partition("=")[2]) if word.startswith("-") else (word,):
+            if part.startswith("~") or ".." in Path(part).parts:
+                return f"path escapes the sandbox: {word}"
+            if part.startswith("/") and not Path(part).resolve().is_relative_to(root.resolve()):
+                return f"path outside the sandbox: {word}"
+    return None
+
+
 def check_command(command: str, root: Path) -> Verdict:
     """Decide whether a shell command may run inside the sandbox rooted at `root`."""
+    if escape := escapes_sandbox(command, root):
+        return Verdict(False, escape, hard=True)
     if any(m in command for m in SHELL_METACHARACTERS):
         return Verdict(False, "one plain command per call; no ;, &&, |, redirection or $(...)")
     try:
@@ -66,14 +87,6 @@ def check_command(command: str, root: Path) -> Verdict:
         return Verdict(False, f"could not parse command: {e}")
     if not argv:
         return Verdict(False, "empty command")
-
-    for arg in argv[1:]:
-        # Check option values too: --rootdir=/ names a path as surely as / does.
-        for part in (arg, arg.partition("=")[2]) if arg.startswith("-") else (arg,):
-            if part.startswith("~") or ".." in Path(part).parts:
-                return Verdict(False, f"path escapes the sandbox: {arg}")
-            if part.startswith("/") and not Path(part).resolve().is_relative_to(root.resolve()):
-                return Verdict(False, f"path outside the sandbox: {arg}")
 
     program, args = argv[0], argv[1:]
     if program in {"python", "python3"}:
@@ -129,6 +142,7 @@ class GuardedShellBackend(LocalShellBackend):
         blocked: list[BlockedAction] | None = None,
         push_approver: Callable[[str], bool] | None = None,
         agent: str = "agent",
+        can_escalate: bool = False,
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, env=env, inherit_env=False, timeout=timeout)
         self.root = Path(root_dir)
@@ -137,6 +151,7 @@ class GuardedShellBackend(LocalShellBackend):
         self.blocked = blocked if blocked is not None else []
         self.push_approver = push_approver
         self.agent = agent
+        self.can_escalate = can_escalate  # this agent has the ask_human_to_run tool
 
     def restricted(self, writable: list[str], agent: str) -> "GuardedShellBackend":
         """Same sandbox and audit log, for another agent, with writes limited to `writable` paths."""
@@ -183,10 +198,19 @@ class GuardedShellBackend(LocalShellBackend):
         verdict = check_command(command, self.root)
         if not verdict.allowed:
             self.blocked.append(BlockedAction(self.agent, command, verdict.reason))
+            hint = ("" if verdict.hard or not self.can_escalate else
+                    " If this exact command is truly needed, call ask_human_to_run with it and explain why;"
+                    " a human decides.")
             return ExecuteResponse(
-                output=f"BLOCKED by CodePilot guardrail: {verdict.reason}. Command not run: {command}",
+                output=f"BLOCKED by CodePilot guardrail: {verdict.reason}. Command not run: {command}.{hint}",
                 exit_code=BLOCKED_EXIT_CODE,
             )
+        return super().execute(command, timeout=timeout)
+
+    def run_once(self, command: str, timeout: int | None = None) -> ExecuteResponse:
+        """Run a command a human approved past the policy. Still never one that reaches outside the sandbox."""
+        if escape := escapes_sandbox(command, self.root):
+            return ExecuteResponse(output=f"BLOCKED by CodePilot guardrail: {escape}", exit_code=BLOCKED_EXIT_CODE)
         return super().execute(command, timeout=timeout)
 
 

@@ -18,7 +18,7 @@ FILE_TOOLS = {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "g
 EXPECTED = {
     "orchestrator": FILE_TOOLS | {"write_todos", "request_review"},
     "repo_explorer": FILE_TOOLS | {"find_relevant_files"},
-    "coder": FILE_TOOLS | {"write_todos", "write_diff_preview"},
+    "coder": FILE_TOOLS | {"write_todos", "write_diff_preview", "ask_human_to_run"},
     "test_agent": FILE_TOOLS,
     "pr_agent": FILE_TOOLS | {"open_pull_request"},
 }

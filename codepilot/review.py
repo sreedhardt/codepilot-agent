@@ -3,7 +3,8 @@
 The Reviewer is one structured model call, not an agent: it sees the issue, the full diff and the test result,
 and approves or requests changes with specific findings. Approval is recorded against a hash of the exact diff
 it saw, and the PR tool refuses to run without an approval for the current diff, so an edit made after the
-review needs a new one. Review rounds are capped to bound cost.
+review needs a new one. Review rounds are capped to bound cost; after the last one, a human decides instead
+of the task failing, so a Reviewer mistake cannot throw away a correct fix.
 """
 
 import hashlib
@@ -119,6 +120,15 @@ class ReviewRecord:
     def add(self, review: Review, diff: str) -> None:
         rounds = self.rounds() + [{"diff_sha256": diff_hash(diff), "verdict": review.verdict, **review.model_dump()}]
         self.path.write_text(json.dumps(rounds, indent=1))
+
+    def add_human_approval(self, diff: str, note: str) -> None:
+        """A human overruled the Reviewer for this exact diff."""
+        rounds = self.rounds() + [{"diff_sha256": diff_hash(diff), "verdict": "approve", "by": "human", "note": note}]
+        self.path.write_text(json.dumps(rounds, indent=1))
+
+    def reviews(self) -> int:
+        """Rounds judged by the Reviewer (human decisions are not rounds)."""
+        return sum(r.get("by") != "human" for r in self.rounds())
 
     def approves(self, diff: str) -> bool:
         rounds = self.rounds()

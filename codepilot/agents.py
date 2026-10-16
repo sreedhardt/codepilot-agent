@@ -123,8 +123,8 @@ what went wrong before. Each delegation automatically carries the current workin
 4. When the coder reports back, read /working/test_report.md and /working/proposed_diff.txt.
 5. If the test report says PASS and the diff is not empty, call request_review. If it requests changes, delegate
    to `coder` again with the reviewer's blocking findings (they are also in /working/review.md), then call
-   request_review again. There are at most 2 review rounds; if the last one still requests changes, stop and
-   end with VERDICT: FAILED and the findings.
+   request_review again. There are at most 2 review rounds; if the last one still requests changes, call
+   request_review once more: a human then decides. If the human rejects, end with VERDICT: FAILED.
 6. Only after a review approves the current change, delegate to `pr_agent` with the task tool to open the pull
    request. Do not ask it to resolve conflicts or retry if it reports FAILED.
 7. Read /working/pr_result.md: it is the authoritative outcome; never describe a PR as opened unless its first
@@ -211,11 +211,11 @@ def make_review_tool(ws: TaskWorkspace):
     @tool
     def request_review() -> str:
         """Have the independent Reviewer check the current change against the issue. A PR can only be opened
-        for a change whose latest review approved it; any edit after an approval needs a new review."""
-        rounds = record.rounds()
-        if len(rounds) >= review.MAX_REVIEW_ROUNDS:
-            return (f"NO MORE REVIEWS: the limit of {review.MAX_REVIEW_ROUNDS} rounds is reached and the last one "
-                    "requested changes. Stop and report FAILED with the reviewer's findings.")
+        for a change whose latest review approved it; any edit after an approval needs a new review. After the
+        last review round, calling this asks a human to decide."""
+        rounds = record.reviews()
+        if rounds >= review.MAX_REVIEW_ROUNDS:
+            return _ask_human(ws.diff())
         diff = ws.diff()
         if not diff:
             return "Nothing to review: the sandbox has no changes."
@@ -229,7 +229,24 @@ def make_review_tool(ws: TaskWorkspace):
             return f"REVIEW UNAVAILABLE: {e}. Call request_review again once; if it fails again, report FAILED."
         record.add(result, diff)
         ws.write("review.md", review.render(result) + "\n")
-        return review.render(result) + f"\n(round {len(rounds) + 1} of {review.MAX_REVIEW_ROUNDS})"
+        last = rounds + 1 == review.MAX_REVIEW_ROUNDS and result.verdict == "request_changes"
+        return (review.render(result) + f"\n(round {rounds + 1} of {review.MAX_REVIEW_ROUNDS})"
+                + ("\nThat was the last round: call request_review once more to have a human decide." if last else ""))
+
+    def _ask_human(diff: str) -> str:
+        # Re-run on resume, so no model call and nothing recorded before the human answers.
+        ws.write("proposed_diff.txt", diff or "(no changes)\n")  # same content each time: safe to repeat
+        decision = request_approval(
+            [Gate.REVIEW_OVERRULE],
+            f"The Reviewer requested changes in all {review.MAX_REVIEW_ROUNDS} rounds. Open a PR for this change anyway?",
+            {"review": "/working/review.md", "diff": "/working/proposed_diff.txt"},
+            ws.approvals,
+        )
+        if decision.approved:
+            record.add_human_approval(diff, decision.note)
+            return "APPROVED BY A HUMAN over the Reviewer's findings. Delegate to pr_agent to open the PR."
+        return ("REJECTED: the human agreed with the Reviewer. Stop and end with VERDICT: FAILED - "
+                + (decision.note or "the Reviewer's findings were not resolved"))
 
     return request_review
 

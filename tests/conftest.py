@@ -11,6 +11,7 @@ def target_python(monkeypatch):
     The default (../bookshelf-api/.venv) exists only on a machine with that repo checked out beside this one.
     """
     monkeypatch.setenv("CODEPILOT_TARGET_PYTHON_BIN", str(Path(sys.executable).parent))
+    monkeypatch.setenv("CODEPILOT_TEST_SANDBOX", "host")  # fast; tests/test_test_sandbox.py covers Docker
 
 
 @pytest.fixture(autouse=True)

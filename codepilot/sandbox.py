@@ -46,6 +46,11 @@ class Verdict:
     hard: bool = False  # never runs, even with a human's approval (it reaches outside the sandbox)
 
 
+def is_test_command(command: str) -> bool:
+    argv = shlex.split(command)
+    return bool(argv) and (argv[0] == "pytest" or (argv[0] in {"python", "python3"} and argv[1:3] == ["-m", "pytest"]))
+
+
 def is_git_push(command: str) -> bool:
     """A single plain `git push ...` command (chained commands are rejected separately)."""
     if any(m in command for m in SHELL_METACHARACTERS):
@@ -143,6 +148,7 @@ class GuardedShellBackend(LocalShellBackend):
         push_approver: Callable[[str], bool] | None = None,
         agent: str = "agent",
         can_escalate: bool = False,
+        test_runner: Callable[[list[str]], "object"] | None = None,
     ) -> None:
         super().__init__(root_dir=root_dir, virtual_mode=True, env=env, inherit_env=False, timeout=timeout)
         self.root = Path(root_dir)
@@ -152,12 +158,13 @@ class GuardedShellBackend(LocalShellBackend):
         self.push_approver = push_approver
         self.agent = agent
         self.can_escalate = can_escalate  # this agent has the ask_human_to_run tool
+        self.test_runner = test_runner  # runs test commands in isolation (see codepilot/test_sandbox.py)
 
     def restricted(self, writable: list[str], agent: str) -> "GuardedShellBackend":
         """Same sandbox and audit log, for another agent, with writes limited to `writable` paths."""
         return GuardedShellBackend(self.root, env=self._env, timeout=self._default_timeout, writable=writable,
                                    protected=self.protected, blocked=self.blocked, push_approver=self.push_approver,
-                                   agent=agent)
+                                   agent=agent, test_runner=self.test_runner)
 
     def _write_denied(self, file_path: str) -> str | None:
         if _matches(file_path, self.protected):
@@ -205,6 +212,9 @@ class GuardedShellBackend(LocalShellBackend):
                 output=f"BLOCKED by CodePilot guardrail: {verdict.reason}. Command not run: {command}.{hint}",
                 exit_code=BLOCKED_EXIT_CODE,
             )
+        if self.test_runner is not None and is_test_command(command):
+            result = self.test_runner(shlex.split(command))
+            return ExecuteResponse(output=result.output, exit_code=result.exit_code)
         return super().execute(command, timeout=timeout)
 
     def run_once(self, command: str, timeout: int | None = None) -> ExecuteResponse:

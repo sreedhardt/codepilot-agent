@@ -19,7 +19,7 @@ from langgraph.types import Command
 
 from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
-from codepilot import github_ops
+from codepilot import github_ops, test_sandbox
 from codepilot.classifier import PROVIDER_KWARGS, Classification, IssueClassifier, build_classifier
 from codepilot.costs import UsageTracker, is_billing_error
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
@@ -89,7 +89,8 @@ def run_issue(
     rail: InputRail | None = None,
 ) -> RunResult:
     """`issue` is a PyGithub Issue (number, title, body, html_url, user)."""
-    require_target_python()
+    if test_sandbox.mode() == "host":
+        require_target_python()  # Docker mode builds its own environment instead
     options, callbacks, memory = options or RunOptions(), callbacks or Callbacks(), memory or Memory()
     registry = registry or TaskRegistry(REGISTRY_PATH)
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)
@@ -133,6 +134,7 @@ def run_issue(
 
     final_text, error = "", None
     try:
+        ws.prepare_tests()
         repo_map = build_repo_map(ws.sandbox, cache_dir=CACHE)
         index = EmbeddingIndex(repo_map, CACHE / "chroma")
         ws.write("repo_map.md", repo_map.render())

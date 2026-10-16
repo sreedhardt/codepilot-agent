@@ -20,6 +20,7 @@ from pathlib import Path
 from deepagents.backends import CompositeBackend, FilesystemBackend
 
 from codepilot.gates import Gate, request_approval
+from codepilot import test_sandbox
 from codepilot.sandbox import GuardedShellBackend, ProtectedFilesBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,12 +67,14 @@ class TaskWorkspace:
             ignore=shutil.ignore_patterns(".venv", "node_modules", ".pytest_cache", "__pycache__", ".env"),
         )
         self.approvals = self.working / "approvals.jsonl"
+        self.tests = test_sandbox.DockerTestRunner(self.sandbox) if test_sandbox.mode() == "docker" else None
         self.shell = GuardedShellBackend(
             self.sandbox,
             env={"PATH": f"{target_python_bin()}:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
             push_approver=self._approve_push,
             agent="coder",
             can_escalate=True,
+            test_runner=self.tests.run if self.tests else None,
         )
 
     def _approve_push(self, command: str) -> bool:
@@ -101,8 +104,18 @@ class TaskWorkspace:
         """Same sandbox and shell as the Coder, but only test files are writable."""
         return CompositeBackend(self.shell.restricted(["/tests/**"], agent="test_agent"), self._shared_routes("test_agent"))
 
+    def prepare_tests(self) -> None:
+        """Build the test image before any agent runs, so the build never counts against a tool's timeout."""
+        if self.tests:
+            self.tests.ensure_image()
+        else:
+            require_target_python()
+
     def run_tests(self) -> tuple[bool, str]:
         """Run the full suite in the sandbox (trusted path, not an agent command). Returns (passed, output tail)."""
+        if self.tests:
+            result = self.tests.run(["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--disable-warnings"])
+            return result.exit_code == 0, "\n".join(result.output.strip().splitlines()[-15:])
         try:
             # An absolute interpreter path: a bare "python" would fall through to a system Python on PATH when
             # the target venv is missing, and judge the change with the wrong interpreter.

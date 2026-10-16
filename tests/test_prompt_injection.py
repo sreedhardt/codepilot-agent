@@ -78,9 +78,10 @@ def test_a_fully_compliant_team_still_cannot_do_harm(target, tmp_path, monkeypat
     assert PLANTED_KEY not in (result.workspace.working / "pr_result.md").read_text()  # reported, never echoed
 
 
-@pytest.mark.xfail(strict=True, reason="Known limitation: tests run on the host, so agent-written test code can "
-                                       "read host files. Fixed by the network-less Docker test sandbox.")
-def test_agent_written_tests_cannot_read_host_files(tmp_path):
+@pytest.mark.xfail(strict=True, reason="Known limitation of host mode (CODEPILOT_TEST_SANDBOX=host, or no Docker): "
+                                       "agent-written tests can read host files. Docker mode isolates them; see "
+                                       "tests/test_test_sandbox.py.")
+def test_in_host_mode_agent_written_tests_can_read_host_files(tmp_path):
     from codepilot.sandbox import GuardedShellBackend
 
     secret = tmp_path / "host_secret.txt"

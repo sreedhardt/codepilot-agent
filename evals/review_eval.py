@@ -20,7 +20,7 @@ load_dotenv(ROOT / ".env")
 
 from codepilot.costs import UsageTracker  # noqa: E402
 from codepilot.models import Role, build_model, model_spec  # noqa: E402
-from codepilot.review import review_change  # noqa: E402
+from codepilot.review import ReviewUnavailable, review_change  # noqa: E402
 
 TESTS = "All tests pass."
 
@@ -37,11 +37,14 @@ def main() -> None:
     rows = []
     for case in cases:
         for _ in range(args.repeats):
-            review = review_change(model, case["issue"], case["diff"], TESTS)
-            ok = review.verdict == case["expect"]
+            try:
+                review = review_change(model, case["issue"], case["diff"], TESTS, case["repo_map"])
+                verdict, blocking = review.verdict, review.gaps()
+            except ReviewUnavailable:
+                verdict, blocking = "unavailable", []
+            ok = verdict == case["expect"]
             rows.append((case, ok))
-            blocking = [f"{f.file}: {f.problem}" for f in review.findings if f.blocking]
-            print(f"{case['id']:15} expect {case['expect']:16} got {review.verdict:16}{'' if ok else '  <- MISS'}")
+            print(f"{case['id']:15} expect {case['expect']:16} got {verdict:16}{'' if ok else '  <- MISS'}")
             for line in blocking:
                 print(f"{'':17}blocking: {line[:150]}")
 

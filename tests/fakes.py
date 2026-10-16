@@ -41,4 +41,4 @@ def approve(ws) -> None:
     """Record an approving review of the workspace's current diff, as the Reviewer would."""
     from codepilot.review import Review, ReviewRecord
 
-    ReviewRecord(ws.working / "review.json").add(Review(verdict="approve", summary="ok", findings=[]), ws.diff())
+    ReviewRecord(ws.working / "review.json").add(Review(requirements=[], files=[], findings=[], summary="ok"), ws.diff())

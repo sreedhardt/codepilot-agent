@@ -222,7 +222,11 @@ def make_review_tool(ws: TaskWorkspace):
         passed, test_output = ws.run_tests()
         if not passed:
             return f"Not reviewed: the test suite fails. Have the coder fix it first.\n{test_output}"
-        result = review.review_change(_model(Role.REVIEWER), (ws.working / "task.md").read_text(), diff, test_output)
+        try:
+            result = review.review_change(_model(Role.REVIEWER), (ws.working / "task.md").read_text(), diff,
+                                          test_output, (ws.working / "repo_map.md").read_text())
+        except review.ReviewUnavailable as e:  # not a round: nothing was judged
+            return f"REVIEW UNAVAILABLE: {e}. Call request_review again once; if it fails again, report FAILED."
         record.add(result, diff)
         ws.write("review.md", review.render(result) + "\n")
         return review.render(result) + f"\n(round {len(rounds) + 1} of {review.MAX_REVIEW_ROUNDS})"

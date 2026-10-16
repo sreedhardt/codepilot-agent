@@ -72,6 +72,7 @@ class TaskRecord:
     retries_after_fail: int = 0
     cost_usd: float = 0.0
     billing_blocked: bool = False  # failed because the model provider refused calls for billing, not on its merits
+    transient: bool = False  # failed on a rate limit or timeout before any work: retried on the next poll
     issue_updated_at: str = ""  # GitHub's updated_at after triage stopped the task; a later edit re-triages it
     notified: bool = False  # the triage comment was posted (not a dry run)
     pid: int = field(default_factory=os.getpid)  # the process running the task, to spot tasks orphaned by a crash

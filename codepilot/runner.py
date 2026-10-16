@@ -21,7 +21,7 @@ from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
 from codepilot import github_ops, test_sandbox
 from codepilot.classifier import PROVIDER_KWARGS, Classification, IssueClassifier, build_classifier
-from codepilot.costs import UsageTracker, is_billing_error
+from codepilot.costs import UsageTracker, is_billing_error, is_transient_error
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
 from codepilot.memory.semantic import SemanticMemory, extract_lesson, render_lessons
 from codepilot.memory.working import WorkingMemory
@@ -205,6 +205,7 @@ def _classification_failed(issue, error: Exception, callbacks: Callbacks, regist
                            started: float) -> RunResult:
     record = TaskRecord(issue.number, issue.title, "unclassified", "", "")
     record.billing_blocked = is_billing_error(error)
+    record.transient = not record.billing_blocked and is_transient_error(error)
     record.move(TaskState.FAILED, f"classification failed: {type(error).__name__}: {str(error)[:200]}")
     callbacks.log(f"#{issue.number} {record.outcome}")
     registry.save(record)

@@ -40,10 +40,12 @@ def _triage(c: Classification, max_complexity: int) -> Triage:
     if c.decision == "reject":
         return _stop(TaskState.DECLINED, c.triage_reason,
                      "CodePilot won't work on this issue automatically.", c.triage_reason)
-    if c.decision == "clarify":
-        questions = "\n".join(f"- {q}" for q in c.questions) or f"- {c.triage_reason}"
+    # Questions the agent can answer by reading the repository are not a reason to stop: it reads it anyway.
+    asks = [q.question for q in c.questions if q.only_reporter_knows]
+    if c.decision == "clarify" and asks:
         return _stop(TaskState.NEEDS_INFO, c.triage_reason,
-                     "CodePilot needs more detail before it can work on this issue:", questions)
+                     "CodePilot needs more detail before it can work on this issue:",
+                     "\n".join(f"- {q}" for q in asks))
     if c.complexity > max_complexity:
         reason = f"complexity {c.complexity}/10 exceeds the limit of {max_complexity} for automated changes"
         return _stop(TaskState.DECLINED, reason, "This looks too large to change automatically.",

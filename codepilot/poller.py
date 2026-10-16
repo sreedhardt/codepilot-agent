@@ -50,7 +50,7 @@ def skip_reason(issue, registry: TaskRegistry, config: PollerConfig) -> str | No
         if updated and record.issue_updated_at and updated > datetime.fromisoformat(record.issue_updated_at):
             return None  # edited or answered since triage: look again
         return f"{record.state.lower().replace('_', ' ')} ({record.outcome[:80]}); waiting for the issue to change"
-    if record.billing_blocked:
+    if record.billing_blocked or record.transient:
         return None  # never really attempted; take it again as soon as polling resumes
     failed_at = datetime.fromisoformat(record.history[-1][1])
     if datetime.now(timezone.utc) - failed_at < timedelta(hours=config.retry_failed_after_hours):

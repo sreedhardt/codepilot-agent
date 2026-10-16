@@ -33,6 +33,18 @@ class BudgetExceeded(RuntimeError):
 BILLING_MARKERS = ("credit balance is too low", "insufficient_quota", "payment required")
 
 
+def is_transient_error(exc: BaseException | None) -> bool:
+    """A rate limit, timeout or connection failure: worth trying again soon, unlike a billing failure."""
+    from langchain_core.exceptions import ModelError
+
+    while exc is not None:
+        if (isinstance(exc, ModelError) and exc.is_retryable) or isinstance(exc, (TimeoutError, ConnectionError)) \
+                or getattr(exc, "status_code", None) in (408, 429, 500, 502, 503, 504):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def is_billing_error(exc: BaseException | None) -> bool:
     """Whether a model call failed because the provider account is out of credit, anywhere in the cause chain.
 

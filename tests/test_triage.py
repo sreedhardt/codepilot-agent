@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from codepilot import runner
-from codepilot.classifier import Classification, TaskType
+from codepilot.classifier import Classification, Question, TaskType
 from codepilot.poller import PollerConfig, skip_reason
 from codepilot.tasks import TaskRegistry, TaskState
 from codepilot.triage import triage
@@ -12,7 +12,8 @@ from codepilot.triage import triage
 
 def assessed(decision="accept", complexity=2, confidence=0.9, questions=()):
     return Classification(task_type=TaskType.BUG_FIX, confidence=confidence, rationale="r", decision=decision,
-                          complexity=complexity, triage_reason="because", questions=list(questions))
+                          complexity=complexity, triage_reason="because",
+                          questions=[Question(question=q, only_reporter_knows=True) for q in questions])
 
 
 def test_policy_proceeds_only_on_confident_accepted_small_work():
@@ -24,6 +25,9 @@ def test_policy_proceeds_only_on_confident_accepted_small_work():
     assert clarify.state == TaskState.NEEDS_INFO and "- Which endpoint?\n- What did you expect?" in clarify.comment
     assert triage(assessed(complexity=9)).state == TaskState.DECLINED  # accepted by the model, too big for policy
     assert triage(assessed(confidence=0.4)).state == TaskState.NEEDS_INFO
+    repo_only = assessed(decision="clarify")
+    repo_only.questions = [Question(question="Which framework does the settings page use?", only_reporter_knows=False)]
+    assert triage(repo_only).proceed  # the agent reads the repo anyway: not a reason to stop
     assert "codepilot-needs-info" in clarify.comment
 
 
@@ -112,23 +116,34 @@ def test_unlabelled_stop_posts_nothing_and_is_not_retried_every_cycle(tmp_path):
     assert skip_reason(i, registry, opening).startswith("declined")
 
 
-def test_malformed_classifier_output_is_retried_once():
+def test_type_and_triage_are_separate_calls_and_malformed_output_is_retried_once():
     from langchain_core.exceptions import OutputParserException
 
-    from codepilot.classifier import LLMIssueClassifier
+    from codepilot.classifier import (PROMPT, TRIAGE_PROMPT, LLMIssueClassifier, TriageAssessment,
+                                      TypeAssessment)
 
-    replies = iter([OutputParserException("echoed the schema"), assessed()])
+    full = assessed()
+    prompts = []
 
     class Chain:
+        def __init__(self, replies):
+            self.replies = iter(replies)
+
         def invoke(self, prompt):
-            reply = next(replies)
+            prompts.append(prompt)
+            reply = next(self.replies)
             if isinstance(reply, Exception):
                 raise reply
             return reply
 
     classifier = LLMIssueClassifier.__new__(LLMIssueClassifier)
-    classifier._chain = Chain()
-    assert classifier.classify("t", "b").decision == "accept"
+    classifier._type = Chain([OutputParserException("echoed the schema"),
+                              TypeAssessment(**full.model_dump(include=set(TypeAssessment.model_fields)))])
+    classifier._triage = Chain([TriageAssessment(**full.model_dump(include=set(TriageAssessment.model_fields)))])
+    result = classifier.classify("t", "b")
+    assert (result.task_type, result.decision, result.complexity) == (full.task_type, "accept", 2)
+    assert PROMPT.format(title="t", body="b") in prompts and TRIAGE_PROMPT.format(title="t", body="b") in prompts
+    assert "Triage" not in PROMPT  # the type prompt carries no triage instructions
 
 
 class Rail:

@@ -190,3 +190,20 @@ def test_each_task_is_one_named_trace(tmp_path):
     config = runner.trace_config(7, "bug_fix", ws)
     assert config["run_name"] == "CodePilot issue #7" and "bug_fix" in config["tags"]
     assert config["metadata"] == {"issue": 7, "task_type": "bug_fix", "workspace": "issue-7-20261016"}
+
+
+def test_a_rate_limited_classification_is_retried_on_the_next_poll(target, tmp_path):
+    from langchain_core.exceptions import ModelRateLimitError
+
+    from codepilot.poller import PollerConfig, skip_reason
+
+    class RateLimited:
+        def classify(self, title, body):
+            raise ModelRateLimitError("Error code: 429 - rate limit reached")
+
+    registry = TaskRegistry(tmp_path / "tasks.json")
+    issue = SimpleNamespace(number=7, title="t", body="b", html_url="u", user=None, assignees=[], pull_request=None,
+                            labels=[SimpleNamespace(name="ai-assignable")])
+    runner.run_issue(issue, runner.RunOptions(runs_dir=tmp_path / "runs"), runner.Callbacks(), registry, RateLimited())
+    assert registry.get(7).transient and not registry.get(7).billing_blocked
+    assert skip_reason(issue, registry, PollerConfig(label="ai-assignable")) is None  # no 24-hour cooldown

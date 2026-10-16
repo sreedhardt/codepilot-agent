@@ -26,7 +26,8 @@ BLOCKED_EXIT_CODE = 126
 SHELL_METACHARACTERS = (";", "&", "|", "`", "$(", ">", "<", "\n")
 READ_ONLY_PROGRAMS = {"ls", "cat", "head", "tail", "grep", "wc", "find", "pwd"}
 GIT_READ_ONLY = {"status", "diff", "log", "show"}
-FIND_FORBIDDEN = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fls"}
+FIND_FORBIDDEN = {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+GIT_FORBIDDEN_OPTIONS = ("--output", "--ext-diff", "--textconv", "--exec-path")  # write files or run programs
 
 
 @dataclass
@@ -67,10 +68,12 @@ def check_command(command: str, root: Path) -> Verdict:
         return Verdict(False, "empty command")
 
     for arg in argv[1:]:
-        if arg.startswith("~") or ".." in Path(arg).parts:
-            return Verdict(False, f"path escapes the sandbox: {arg}")
-        if arg.startswith("/") and not Path(arg).resolve().is_relative_to(root.resolve()):
-            return Verdict(False, f"path outside the sandbox: {arg}")
+        # Check option values too: --rootdir=/ names a path as surely as / does.
+        for part in (arg, arg.partition("=")[2]) if arg.startswith("-") else (arg,):
+            if part.startswith("~") or ".." in Path(part).parts:
+                return Verdict(False, f"path escapes the sandbox: {arg}")
+            if part.startswith("/") and not Path(part).resolve().is_relative_to(root.resolve()):
+                return Verdict(False, f"path outside the sandbox: {arg}")
 
     program, args = argv[0], argv[1:]
     if program in {"python", "python3"}:
@@ -80,6 +83,8 @@ def check_command(command: str, root: Path) -> Verdict:
     if program == "pytest":
         return Verdict(True)
     if program == "git":
+        if any(a == opt or a.startswith(opt + "=") for a in argv[1:] for opt in GIT_FORBIDDEN_OPTIONS):
+            return Verdict(False, "git options that write files or run programs are not allowed")
         if args and args[0] in GIT_READ_ONLY:
             return Verdict(True)
         return Verdict(False, f"git is read-only here: allowed subcommands are {sorted(GIT_READ_ONLY)}")
@@ -91,6 +96,10 @@ def check_command(command: str, root: Path) -> Verdict:
 
 
 PROTECTED_FILES = ["/**/.env", "/**/.env.*", "/**/*.secret", "/**/*.pem", "/**/*.key", "/**/*credentials*"]
+# CI and repository automation run with the repository's secrets, and git's own config can make read-only git
+# commands run programs (core.fsmonitor, diff drivers): changes here need a human, never an agent.
+AUTOMATION_FILES = ["/.git/**", "/.github/**", "/.gitlab-ci.yml", "/.circleci/**", "/Jenkinsfile",
+                    "/azure-pipelines.yml", "/.gitattributes"]
 
 
 def _matches(path: str, patterns: list[str]) -> bool:
@@ -138,6 +147,8 @@ class GuardedShellBackend(LocalShellBackend):
     def _write_denied(self, file_path: str) -> str | None:
         if _matches(file_path, self.protected):
             reason = "protected file: secrets and credentials are never edited"
+        elif _matches(file_path, AUTOMATION_FILES):
+            reason = "CI, repository automation and git internals are never edited by agents"
         elif self.writable is not None and not _matches(file_path, self.writable):
             reason = f"outside this agent's writable paths {self.writable}"
         else:

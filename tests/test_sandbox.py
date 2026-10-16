@@ -19,6 +19,8 @@ ROOT = Path("/tmp/codepilot-sandbox-test")
         "find . -name '*.py'",
         "git diff",
         "git status --short",
+        "git log -c -1",
+        "python -m pytest --rootdir=.",
         f"cat {ROOT}/app/loans.py",
     ],
 )
@@ -49,6 +51,12 @@ def test_allows_tests_and_read_only_inspection(command):
         "cat ~/.ssh/id_rsa",
         "find . -name '*.py' -delete",
         "find . -exec rm {} +",
+        "find . -name x -fprintf .github/workflows/x.yml payload",
+        "python -m pytest --rootdir=/",
+        "python -m pytest --basetemp=../outside",
+        "git diff --output=.github/workflows/x.yml",
+        "git diff --ext-diff",
+        "git -c core.pager=sh log",
         "bash -c 'ls'",
         "sudo ls",
         "",
@@ -81,7 +89,8 @@ def test_backend_runs_allowed_commands_in_sandbox(tmp_path):
     assert result.output.strip() == "hi"
 
 
-@pytest.mark.parametrize("path", ["/.env", "/config/.env.prod", "/deploy/server.pem", "/app/aws_credentials.json", "/x.key"])
+@pytest.mark.parametrize("path", ["/.env", "/config/.env.prod", "/deploy/server.pem", "/app/aws_credentials.json", "/x.key",
+                                  "/.github/workflows/ci.yml", "/.git/config", "/.gitlab-ci.yml", "/.gitattributes"])
 def test_protected_files_are_never_writable(tmp_path, path):
     backend = GuardedShellBackend(tmp_path)
     assert "BLOCKED" in backend.write(path, "x").error

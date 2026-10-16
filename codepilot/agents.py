@@ -160,7 +160,7 @@ Shell commands already run in the repository root: use relative paths and never 
 4. Implement with edit_file, making surgical edits. Never rewrite whole files.
 5. Run the code you touched with `python -m pytest -q` to make sure it does not crash.
 6. Delegate verification to `test_agent` with the task tool. If it reports FAIL, fix the cause and delegate again.
-   Stop after 3 failed verification rounds and report what is wrong.
+   You have at most 3 retries after a failed round (a human approves the later ones); then stop and report.
 7. Call write_diff_preview, then reply with: root cause, files changed, tests added, verification result.
 
 

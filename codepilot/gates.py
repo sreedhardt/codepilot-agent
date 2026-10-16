@@ -22,6 +22,7 @@ from langgraph.types import Command, interrupt
 
 LARGE_COMMIT_FILES = 5
 FREE_TEST_FAILURES = 2
+MAX_TEST_RETRIES = 3  # verification rounds after a failure; no approval can extend this
 
 
 class Gate(StrEnum):
@@ -59,7 +60,8 @@ def request_approval(gates: list[Gate], summary: str, details: dict, audit_log: 
 
 
 class RetryGateMiddleware(AgentMiddleware):
-    """Requires approval before the Coder's third (and later) verification round after failed test runs."""
+    """Requires approval before the Coder's third (and later) verification round after failed test runs, and
+    refuses any round beyond MAX_TEST_RETRIES retries."""
 
     def __init__(self, audit_log: Path | None = None, free_failures: int = FREE_TEST_FAILURES) -> None:
         super().__init__()
@@ -71,6 +73,12 @@ class RetryGateMiddleware(AgentMiddleware):
         call = request.tool_call
         if call["name"] != "task" or call["args"].get("subagent_type") != "test_agent":
             return handler(request)
+        if self.failures > MAX_TEST_RETRIES:
+            return ToolMessage(
+                content=f"STOPPED: the tests failed {self.failures} times and the limit is {MAX_TEST_RETRIES} retries. "
+                        "Stop and report the failing tests.",
+                tool_call_id=call["id"],
+            )
         if self.failures >= self.free_failures:
             decision = request_approval(
                 [Gate.RETRY_AFTER_FAILURES],

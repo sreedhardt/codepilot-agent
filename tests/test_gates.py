@@ -50,6 +50,26 @@ def test_retry_gate_pauses_before_third_round_and_rejection_stops(tmp_path):
     assert json.loads((tmp_path / "approvals.jsonl").read_text())["approved"] is False
 
 
+def test_no_approval_allows_more_than_three_retries(tmp_path):
+    tester = ScriptedModel(script=[AIMessage(content="FAIL - 1 failed: test_search")])
+    verify = lambda i: tool_call("task", {"description": "verify", "subagent_type": "test_agent"}, f"v{i}")
+    coder = create_deep_agent(
+        model=ScriptedModel(script=[verify(i) for i in range(1, 6)] + [AIMessage(content="gave up")]),
+        subagents=[CompiledSubAgent(name="test_agent", description="tests",
+                                    runnable=create_deep_agent(model=tester, name="test_agent"))],
+        middleware=[RetryGateMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+    cfg = {"configurable": {"thread_id": "cap"}}
+    pending = run_until_pause(coder, {"messages": [{"role": "user", "content": "fix it"}]}, cfg)
+    while pending:  # a human who approves every extra round
+        pending = run_until_pause(coder, Command(resume={p.id: {"approved": True} for p in pending}), cfg)
+
+    assert tester.calls == 4  # the first round plus 3 retries
+    messages = coder.get_state(cfg).values["messages"]
+    assert any(str(m.content).startswith("STOPPED: the tests failed 4 times") for m in messages)
+
+
 @pytest.fixture
 def workspace(tmp_path):
     repo = tmp_path / "repo"

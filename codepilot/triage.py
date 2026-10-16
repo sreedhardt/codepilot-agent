@@ -56,6 +56,12 @@ def _triage(c: Classification, max_complexity: int) -> Triage:
     return Triage(True, TaskState.TRIAGED, c.triage_reason)
 
 
+def blocked_by_rail(reason: str) -> Triage:
+    return _stop(TaskState.DECLINED, reason, "CodePilot won't work on this issue automatically.",
+                 "Its text appears to give instructions to an automated agent rather than describe a change. "
+                 "If that is a misunderstanding, rephrase the issue as a description of the change you need.")
+
+
 def _stop(state: TaskState, reason: str, lead: str, detail: str) -> Triage:
     comment = (f"{lead}\n\n{detail}\n\nEdit the issue or reply here and CodePilot will look at it again "
                f"on its next check. (Labelled `{LABELS[state]}`.)")

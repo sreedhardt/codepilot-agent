@@ -129,3 +129,32 @@ def test_malformed_classifier_output_is_retried_once():
     classifier = LLMIssueClassifier.__new__(LLMIssueClassifier)
     classifier._chain = Chain()
     assert classifier.classify("t", "b").decision == "accept"
+
+
+class Rail:
+    def __init__(self, blocked=False, error=None):
+        self.blocked, self.error, self.calls = blocked, error, 0
+
+    def screen(self, title, body):
+        from codepilot.input_rail import RailVerdict
+
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return RailVerdict(self.blocked, "blocked by the NeMo input rail (self check input)" if self.blocked else "")
+
+
+def test_input_rail_block_declines_before_classification(tmp_path):
+    i = issue()
+    classifier = SimpleNamespace(classify=lambda title, body: pytest.fail("classified a blocked issue"))
+    result = runner.run_issue(i, runner.RunOptions(open_pr=True, runs_dir=tmp_path / "runs"), runner.Callbacks(),
+                              TaskRegistry(tmp_path / "tasks.json"), classifier, rail=Rail(blocked=True))
+    assert result.record.state == TaskState.DECLINED and "NeMo input rail" in result.record.outcome
+    assert "instructions to an automated agent" in i.comments[0]  # labelled, so the reporter is told
+
+
+def test_input_rail_failure_fails_closed(tmp_path):
+    classifier = SimpleNamespace(classify=lambda title, body: pytest.fail("ran unscreened"))
+    result = runner.run_issue(issue(), runner.RunOptions(runs_dir=tmp_path / "runs"), runner.Callbacks(),
+                              TaskRegistry(tmp_path / "tasks.json"), classifier, rail=Rail(error=TimeoutError("groq")))
+    assert result.record.state == TaskState.FAILED

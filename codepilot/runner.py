@@ -32,7 +32,8 @@ from codepilot.skills import skill_for
 from codepilot.tasks import TaskRecord, TaskRegistry, TaskState, TaskTracker
 from codepilot.poller import PollerConfig, opted_in
 from codepilot.triage import LABELS as TRIAGE_LABELS
-from codepilot.triage import Triage, triage
+from codepilot.triage import Triage, blocked_by_rail, triage
+from codepilot.input_rail import InputRail, build_input_rail
 from codepilot.workspace import ROOT, RUNS_DIR, TaskWorkspace, require_target_python
 
 CACHE = ROOT / ".codepilot_cache"
@@ -85,6 +86,7 @@ def run_issue(
     registry: TaskRegistry | None = None,
     classifier: IssueClassifier | None = None,
     memory: Memory | None = None,
+    rail: InputRail | None = None,
 ) -> RunResult:
     """`issue` is a PyGithub Issue (number, title, body, html_url, user)."""
     require_target_python()
@@ -94,12 +96,17 @@ def run_issue(
     usage = UsageTracker(options.max_cost_usd, None if options.max_minutes is None else options.max_minutes * 60)
 
     try:
-        classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
-    except Exception as e:  # noqa: BLE001 - one unclassifiable issue must not stop the poller or the TUI
-        return _classification_failed(issue, e, callbacks, registry, started)
+        screened = (rail or build_input_rail()).screen(issue.title, issue.body or "")
+        if not screened.blocked:
+            classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
+    except Exception as e:  # noqa: BLE001 - one unscreenable issue must not stop the poller or the TUI
+        return _classification_failed(issue, e, callbacks, registry, started)  # fails closed, retried later
+    if screened.blocked:
+        return _stop_at_triage(issue, "unclassified", blocked_by_rail(screened.reason), options, callbacks,
+                               registry, started)
     decision = triage(classification, opted_in(issue, PollerConfig().label))
     if not decision.proceed:
-        return _stop_at_triage(issue, classification, decision, options, callbacks, registry, started)
+        return _stop_at_triage(issue, classification.task_type.value, decision, options, callbacks, registry, started)
     if options.open_pr and hasattr(issue, "remove_from_labels"):
         github_ops.clear_triage_labels(issue, TRIAGE_LABELS.values())
     skill = skill_for(classification.task_type)
@@ -197,10 +204,12 @@ def _classification_failed(issue, error: Exception, callbacks: Callbacks, regist
                      workspace=None)
 
 
-def _stop_at_triage(issue, classification: Classification, decision: Triage, options: RunOptions,
+def _stop_at_triage(issue, task_type: str, decision: Triage, options: RunOptions,
                      callbacks: Callbacks, registry: TaskRegistry, started: float) -> RunResult:
     """End the task before any workspace or agent exists, telling the reporter why when PRs are enabled."""
-    record = TaskRecord(issue.number, issue.title, classification.task_type.value, "", "")
+    if not opted_in(issue, PollerConfig().label):
+        decision.comment = ""  # never post on an issue nobody asked CodePilot to handle
+    record = TaskRecord(issue.number, issue.title, task_type, "", "")
     record.move(decision.state, decision.reason)
     updated = getattr(issue, "updated_at", None)
     record.issue_updated_at = updated.isoformat() if updated else ""

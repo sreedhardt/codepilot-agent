@@ -27,6 +27,7 @@ class Role(StrEnum):
     PR = "pr"
     SUMMARIZER = "summarizer"
     REVIEWER = "reviewer"
+    INPUT_RAIL = "input_rail"
 
 
 FALLBACK_MODEL = "groq:openai/gpt-oss-120b"

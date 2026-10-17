@@ -1,0 +1,42 @@
+# LiteLLM gateway in front of every model CodePilot calls. CodePilot holds only a virtual key with a spend cap;
+# the provider keys live here. Start it with scripts/gateway.py (reads provider keys from CodePilot's .env by
+# variable substitution and this directory's generated .env for the gateway's own keys).
+services:
+  litellm:
+    image: docker.litellm.ai/berriai/litellm-database:latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000"   # localhost only
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?run scripts/gateway.py up}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?run scripts/gateway.py up}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD}@db:5432/litellm
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?run scripts/gateway.py up}
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - codepilot_gateway_db:/var/lib/postgresql/data
+
+volumes:
+  codepilot_gateway_db:

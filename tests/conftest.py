@@ -18,3 +18,10 @@ def target_python(monkeypatch):
 def no_live_input_rail(monkeypatch):
     """The NeMo input rail calls a model; tests that need it pass a fake rail to run_issue."""
     monkeypatch.setenv("CODEPILOT_INPUT_RAIL", "off")
+
+
+@pytest.fixture(autouse=True)
+def no_llm_gateway(monkeypatch):
+    """Tests build models directly; tests/test_models.py sets the gateway explicitly where it is under test."""
+    monkeypatch.delenv("CODEPILOT_LLM_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("CODEPILOT_LLM_GATEWAY_KEY", raising=False)

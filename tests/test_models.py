@@ -51,3 +51,30 @@ def test_builds_each_provider_without_network(monkeypatch):
     monkeypatch.setenv("CODEPILOT_MODEL_CODER", "anthropic:claude-sonnet-5")
     assert type(build_model(Role.CODER)).__name__ == "ChatAnthropic"
     assert type(build_model(Role.CLASSIFIER)).__name__ == "ChatGroq"
+
+
+def test_through_the_gateway_codepilot_needs_only_the_virtual_key(monkeypatch):
+    from codepilot.models import chat_model
+
+    for key in ("ANTHROPIC_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CODEPILOT_LLM_GATEWAY_URL", "http://localhost:4000/")
+    monkeypatch.setenv("CODEPILOT_LLM_GATEWAY_KEY", "sk-virtual")
+
+    claude = chat_model("anthropic", "claude-sonnet-5")
+    assert type(claude).__name__ == "ChatAnthropic"  # Anthropic-format endpoint: prompt caching keeps working
+    assert claude.anthropic_api_url == "http://localhost:4000" and claude.anthropic_api_key.get_secret_value() == "sk-virtual"
+    oss = chat_model("groq", "openai/gpt-oss-120b")
+    assert type(oss).__name__ == "ChatOpenAI" and oss.openai_api_base == "http://localhost:4000/v1"
+    assert oss.model_name == "openai/gpt-oss-120b"  # the gateway's name, which is also CodePilot's price key
+
+
+def test_without_the_gateway_a_provider_key_is_required(monkeypatch):
+    import pytest
+
+    from codepilot.models import chat_model
+
+    monkeypatch.delenv("CODEPILOT_LLM_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        chat_model("anthropic", "claude-haiku-4-5")

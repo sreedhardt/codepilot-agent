@@ -22,3 +22,6 @@ runs/
 
 # Persistent memory (episodic store, lessons)
 .codepilot_memory/
+
+# Generated gateway keys
+deploy/llm-gateway/.env

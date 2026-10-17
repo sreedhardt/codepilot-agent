@@ -24,7 +24,6 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
 )
 from langchain.agents.middleware.model_retry import default_retry_on
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 from langchain_core.tools import tool
@@ -35,7 +34,7 @@ from codepilot.classifier import TaskType
 from codepilot.costs import BudgetExceeded, is_billing_error
 from codepilot.gates import LARGE_COMMIT_FILES, Gate, RetryGateMiddleware, request_approval
 from codepilot.memory.working import WorkingMemoryMiddleware
-from codepilot.models import Role, build_model, model_spec
+from codepilot.models import Role, build_model, chat_model, gateway, model_spec
 from codepilot.repo_map import EmbeddingIndex, RepoMap
 from codepilot.sandbox import BlockedAction, check_command, is_git_push
 from codepilot.skills import Skill
@@ -101,9 +100,9 @@ def _middleware(role: Role) -> list:
     if model_spec(role).startswith("groq:"):
         fallback = os.getenv("CODEPILOT_FALLBACK_MODEL", "anthropic:claude-haiku-4-5")
         provider, _, name = fallback.partition(":")
-        if provider != "anthropic" or os.getenv("ANTHROPIC_API_KEY"):
+        if provider != "anthropic" or os.getenv("ANTHROPIC_API_KEY") or gateway():
             kwargs = PROVIDER_KWARGS.get(provider, {})
-            middleware.append(ModelFallbackMiddleware(init_chat_model(name, model_provider=provider, **kwargs)))
+            middleware.append(ModelFallbackMiddleware(chat_model(provider, name, **kwargs)))
     middleware.append(ModelRetryMiddleware(max_retries=2, retry_on=_retry_on(role), on_failure="error", initial_delay=1.0))
     middleware.append(ModelCallLimitMiddleware(run_limit=MODEL_CALL_LIMITS.get(role, 20), exit_behavior="end"))
     return middleware

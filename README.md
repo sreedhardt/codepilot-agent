@@ -55,12 +55,15 @@ approval it raises with `--open-pr` before opening a PR to `main`. Rendered from
   Explorer (finds the relevant files), a Coder (implements, with a Test Agent of its own that writes and runs
   tests), a Reviewer (checks the change against the issue), and a PR Agent.
 - **Works in a sandbox**: a disposable copy of the repository, a guarded shell, and tests that run in a
-  network-less Docker container.
+  network-less Docker container. It follows the repository's own `AGENTS.md` / `CONTRIBUTING.md`, screened first.
 - **Opens a pull request** on a `codepilot/issue-N-slug` branch with a structured commit message, a templated
   body, labels and a review request to the reporter.
 - **Learns**: it remembers recent sessions and stores lessons from merged pull requests for similar issues.
 - **Asks a human** before opening a PR to `main`, committing more than 5 files, pushing, retrying after
   repeated test failures, overruling the Reviewer, or running a command the guardrail blocked.
+
+- **Calls models through an LLM gateway** (LiteLLM): CodePilot holds only a spend-capped virtual key; the provider
+  keys live in the gateway.
 
 CodePilot never merges, approves or pushes on its own: no agent has a tool that can.
 
@@ -183,6 +186,8 @@ issue and checks that each harmful action is still stopped.
 | Secret scan | Held secret values or known token formats in the diff, PR body or commit message | `codepilot/secret_scan.py` |
 | Approval gates | Risky operations without a human decision | `codepilot/gates.py` |
 | Budgets | Runaway tasks: $2 and 20 minutes per task by default; billing errors pause polling | `codepilot/costs.py` |
+| LLM gateway | Provider keys in CodePilot's process; spend beyond the virtual key's cap, enforced outside CodePilot | `deploy/llm-gateway/`, `scripts/gateway.py` |
+| Conventions screening | A target repository's `AGENTS.md` written to hijack the agents | `codepilot/conventions.py` |
 | Tool inventory | New tools sneaking in with a framework upgrade; no agent can reach GitHub except `open_pull_request` | `tests/test_tool_inventory.py` |
 
 **Approval gates** pause the run with a LangGraph interrupt and wait for the TUI (or the console):
@@ -208,7 +213,7 @@ git clone https://github.com/sreedhardt/codepilot-agent.git
 cd codepilot-agent
 uv sync
 cp .env.example .env        # then fill in the keys and the target repository
-uv run pytest -q            # 210 tests, no model API calls (Docker tests build a small image)
+uv run pytest -q            # 216 tests, no model API calls (Docker tests build a small image)
 ```
 
 **Target repository.** Clone the repository CodePilot should work on next to this one and point
@@ -221,6 +226,26 @@ git clone https://github.com/sreedhardt/bookshelf-api.git ../bookshelf-api
 **GitHub App.** Create an App with *Contents*, *Issues* and *Pull requests* read and write permissions, install it
 on the target repository, and set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` (a path to the `.pem` file). The
 App never needs merge or admin rights, and CodePilot has no code path that uses them.
+
+**LLM gateway** (recommended). Start LiteLLM with Postgres, bound to localhost, and give CodePilot a virtual key
+capped at a budget; the script writes the key's settings into `.env` and never prints a secret:
+
+```bash
+uv run python scripts/gateway.py up
+uv run python scripts/gateway.py key --budget 10
+uv run python scripts/gateway.py status     # spend so far against the cap
+```
+
+```mermaid
+flowchart LR
+    CP[CodePilot<br/>virtual key only] -->|Anthropic format /v1/messages| GW[LiteLLM gateway<br/>localhost:4000]
+    CP -->|OpenAI format /v1| GW
+    GW --> A[Anthropic<br/>Sonnet 5, Haiku 4.5]
+    GW --> G[Groq<br/>gpt-oss-120b, 20b]
+    GW --- DB[(Postgres<br/>keys, budgets, spend)]
+```
+
+Without the gateway settings CodePilot calls the providers directly with the keys in `.env`.
 
 **Check the setup** before the first run; it verifies the GitHub App can see the issues and that every model
 provider in `.env` answers:
@@ -272,6 +297,7 @@ Every setting lives in `.env`; `.env.example` lists them all with defaults.
 | `CODEPILOT_RETRY_FAILED_AFTER_HOURS` | `24` | Cooldown before a failed issue is tried again |
 | `CODEPILOT_USE_DRAFT_LESSONS` | `false` | Also use lessons from PRs that are not merged yet |
 | `LANGSMITH_TRACING` | `false` | Trace every task to LangSmith, one trace per issue |
+| `CODEPILOT_LLM_GATEWAY_URL` / `_KEY` | unset | Call every model through the LiteLLM gateway with this virtual key (set by `scripts/gateway.py key`) |
 
 **Models per role**, as measured (see [Design decisions](#design-decisions)):
 
@@ -294,6 +320,10 @@ It is written to the shared virtual filesystem, so every subagent reads the same
 strategies, chosen per query: keyword matching over the map (fast, exact names) and embedding search over file
 chunks in ChromaDB (slower, catches paraphrases). Agents read files on demand with `read_file`; the Orchestrator's
 delegations carry file paths, never file contents; and DeepAgents' auto-summarization compacts older turns.
+
+**Repository conventions** (`codepilot/conventions.py`). The target's `AGENTS.md` and `CONTRIBUTING.md` (also
+under `docs/` and `.github/`) are read at task start, capped in size, screened by the input rail as untrusted
+input, and given to the Coder and Test Agent as a read-only file. A blocked file is withheld; the task goes on.
 
 **Skills** (`skills/*/SKILL.md`, `codepilot/skills.py`). Five DeepAgents skills, one per task type: `bug_fix`
 (reproduce with a failing test, then fix), `feature_addition`, `dependency_update`, `documentation` and
@@ -330,10 +360,12 @@ Everything below can be re-run; `evals/results/` is git-ignored.
 |---|---|---|
 | End-to-end on the six seeded issues | `evals/run_suite.py` | 5/6 fixed, $1.88 (table above) |
 | Task type | `evals/classifier_eval.py --repeats 3` | Every answered call correct: 65/65 labelled, 24/24 held-out, no unstable cases |
-| Triage | `evals/triage_eval.py` | Unsafe, manipulative and out-of-scope issues declined in every measured run; issues that need detail stopped in 20/20 runs; see limitations for over-cautious cases |
+| Triage | `evals/triage_eval.py` | Held-out: 16/16 proceed or stop correctly, 16/16 decisions, 8/8 task types; issues that need detail stopped in 20/20 runs; see limitations for over-cautious cases |
 | Input rail | `evals/rail_eval.py` | 3/3 injection issues blocked, 46/46 legitimate issues passed, 0.43 s each |
 | Reviewer | `evals/review_eval.py --repeats 2` | 12/14 flawed changes blocked, 9/10 good fixes approved, 2/2 comments addressed to the Reviewer resisted, $0.007 per review |
-| Unit and integration tests | `uv run pytest` | 210 passing, plus one strict xfail that pins the host-mode limitation |
+| Through the LLM gateway | `evals/run_suite.py --issues 2` | Fixed, $0.25 by CodePilot's own count and $0.2517 by the gateway's; prompt caching unchanged |
+| LangSmith experiments | `evals/langsmith_experiments.py` | The same cases as LangSmith datasets; rail 49/49, Reviewer 13/13 and triage holdout 16/16 in the first experiments |
+| Unit and integration tests | `uv run pytest` | 216 passing, plus one strict xfail that pins the host-mode limitation |
 
 The Reviewer's cases (`evals/review_cases/`) are real fixes from evaluation runs that passed the hidden tests, one
 real incomplete fix, and copies of good fixes with a flaw inserted: debug output, a weakened or skipped test, an
@@ -379,6 +411,17 @@ choice for hybrid dense and BM25 search, which helps with exact identifiers (the
 today), or for replication at larger scale. Only `EmbeddingIndex` and `SemanticMemory` touch the vector store, so
 the swap is contained.
 
+**An LLM gateway, through each provider's native format.** LiteLLM keeps provider keys out of CodePilot and
+enforces the spend cap outside it, a second budget besides CodePilot's own. Anthropic calls use the gateway's
+Anthropic-format endpoint rather than its OpenAI-compatible one, because CodePilot depends on prompt caching
+(about 80% of input tokens are cache reads); through the gateway the second of two identical calls read 4,209 of
+4,222 input tokens from cache, as direct. Groq calls use the OpenAI-compatible endpoint, strict structured output
+included.
+
+**Repository conventions are not DeepAgents memory.** DeepAgents' `memory=` loads `AGENTS.md` with a prompt that
+tells the agent to edit the file as it learns, which would put unrelated changes to the target's `AGENTS.md`
+into pull requests. CodePilot screens the files and hands them over read-only instead.
+
 **Dry run by default, polling not webhooks.** Every run is safe to start; opening PRs is an explicit flag.
 Polling needs no public endpoint; webhooks are future work.
 
@@ -402,6 +445,11 @@ the history reads correctly.
 - **Host mode is not isolated.** Without Docker, or with `CODEPILOT_TEST_SANDBOX=host`, agent-written tests run on
   the host and can read its files; a strict xfail test pins this. Read-only commands (`ls`, `cat`, `git diff`)
   always run on the host. A command a human approves through `blocked_operation` runs on the host too.
+- **A hung model call stalls its task.** The task deadline is checked between model calls, so a stream that
+  never completes (seen once when the machine slept mid-run) blocks the task until the process is stopped.
+- **One-machine gateway.** `scripts/gateway.py` reads the provider keys from CodePilot's `.env` to start the
+  gateway on the same machine; in a real deployment the gateway runs elsewhere and CodePilot's `.env` holds only
+  the virtual key.
 - **Approvals do not survive a restart.** The run state uses an in-memory checkpointer, so a task waiting on a
   gate is lost if CodePilot stops; startup marks it failed and it is retried after the cooldown.
 - **Groq's free tier caps `gpt-oss-120b` at 200,000 tokens a day.** Heavy evaluation runs can exhaust it; rate
@@ -420,6 +468,7 @@ the history reads correctly.
 - A held-out set for the Reviewer, built from more real runs.
 - Retry when a PR is closed without merging, using the reviewer's comments as context.
 - A cloud sandbox (Daytona or Modal) for teams without Docker.
+- A hard per-task deadline that can interrupt a model call, not only refuse the next one.
 
 ---
 
@@ -432,6 +481,7 @@ codepilot/
   classifier.py      Task type and triage calls
   triage.py          Triage policy
   input_rail.py      NeMo Guardrails input rail (config in rails/)
+  conventions.py     The target repository's AGENTS.md / CONTRIBUTING.md, screened
   runner.py          One task end to end; shared by the CLI, TUI and evals
   poller.py          Issue intake
   tasks.py           State machine and task registry
@@ -450,5 +500,6 @@ codepilot/
 skills/              One SKILL.md per task type
 evals/               Evaluation scripts, labelled cases, hidden acceptance tests
 tests/               Unit, integration and prompt-injection tests
-scripts/             Setup check
+deploy/llm-gateway/  LiteLLM gateway: docker-compose and model list
+scripts/             Setup check, gateway control, TUI snapshot
 ```

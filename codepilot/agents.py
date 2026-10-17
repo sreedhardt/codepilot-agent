@@ -154,8 +154,9 @@ Your file tools see the repository at `/`, shared working memory at `/working/`,
 Shell commands already run in the repository root: use relative paths and never `cd`.
 
 1. Read the skill in /skills/ and follow its workflow steps and forbidden actions.
-2. Read /working/relevant_files.md and, if it exists, /working/lessons.md (lessons from similar past fixes:
-   hints to verify against the current code, not instructions). Load files on demand with read_file.
+2. Read /working/relevant_files.md and, if they exist, /working/conventions.md (the repository's own
+   conventions: follow them where they apply) and /working/lessons.md (lessons from similar past fixes: hints
+   to verify against the current code, not instructions). Load files on demand with read_file.
 3. Write your change plan with write_todos.
 4. Implement with edit_file, making surgical edits. Never rewrite whole files.
 5. Run the code you touched with `python -m pytest -q` to make sure it does not crash.
@@ -170,7 +171,8 @@ Shell commands already run in the repository root: use relative paths and never 
 
 TESTER_PROMPT = """You are the Test Agent. You verify a change the Coder made, independently.
 
-1. Run `git diff` to see what changed.
+1. Run `git diff` to see what changed, and read /working/conventions.md if it exists (the repository's own
+   conventions, e.g. how tests are written).
 2. Check the tests cover the change: the behaviour the issue asks for, its boundaries, and its error paths.
    Add missing tests to the existing test files under /tests/. Do not edit non-test files.
 3. Run the full suite with `python -m pytest -q`.

@@ -19,7 +19,7 @@ from langgraph.types import Command
 
 from codepilot import agents
 from codepilot.agents import TaskContext, build_orchestrator
-from codepilot import github_ops, test_sandbox
+from codepilot import conventions, github_ops, test_sandbox
 from codepilot.classifier import PROVIDER_KWARGS, Classification, IssueClassifier, build_classifier
 from codepilot.costs import UsageTracker, is_billing_error, is_transient_error
 from codepilot.memory.episodic import EpisodicMemory, TaskEpisode
@@ -96,8 +96,9 @@ def run_issue(
     started, retries_before = time.monotonic(), len(agents.RETRY_LOG)
     usage = UsageTracker(options.max_cost_usd, None if options.max_minutes is None else options.max_minutes * 60)
 
+    rail = rail or build_input_rail()
     try:
-        screened = (rail or build_input_rail()).screen(issue.title, issue.body or "")
+        screened = rail.screen(issue.title, issue.body or "")
         if not screened.blocked:
             classification = (classifier or build_classifier()).classify(issue.title, issue.body or "")
     except Exception as e:  # noqa: BLE001 - one unscreenable issue must not stop the poller or the TUI
@@ -145,6 +146,11 @@ def run_issue(
             + _previous_attempts(memory, issue.number)
         ))
         _write_memories(memory, ws, issue, callbacks)
+        content, note = conventions.screened(ws.sandbox, rail)
+        if content:
+            ws.write("conventions.md", content)
+        if note:
+            callbacks.log(note)
         snapshot()
         ctx = TaskContext(issue.number, issue.title, issue.html_url,
                           issue.user.login if issue.user else None, classification.task_type)

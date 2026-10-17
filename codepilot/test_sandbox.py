@@ -1,8 +1,8 @@
 """Where agent-written tests run: a network-less Docker container, or the host.
 
 Running a test suite executes code an agent wrote. On the host that code could read any file the user can and
-reach the network; in the container it sees only the disposable sandbox copy, has no network, runs as a
-non-root user on a read-only root filesystem with no capabilities, and is limited in processes, memory and CPU.
+reach the network; in the container it sees only the disposable sandbox copy, has no network, runs as the
+host's (non-root) user on a read-only root filesystem with no capabilities, and is limited in processes, memory and CPU.
 
 The image is built from the target repo's own dependency files and tagged by their hash, so a change to them
 (a dependency update task) builds a new one. Builds have network access to install packages; test runs never
@@ -91,6 +91,13 @@ def python_version(sandbox: Path) -> str:
     return DEFAULT_PYTHON
 
 
+def run_as() -> str:
+    """The container's uid:gid: the host user's, so the mounted sandbox is readable and writable on Linux, where
+    Docker does not remap file ownership as Docker Desktop does; never root, even if CodePilot runs as root."""
+    uid, gid = os.getuid(), os.getgid()
+    return "1000:1000" if uid == 0 else f"{uid}:{gid}"
+
+
 class DockerTestRunner:
     """Runs test commands for one sandbox in a container built for its dependencies."""
 
@@ -117,8 +124,8 @@ class DockerTestRunner:
         return tag
 
     def command(self, argv: list[str], image: str) -> list[str]:
-        return ["docker", "run", "--rm", *RUN_FLAGS, "-v", f"{self.sandbox.resolve()}:/work", "-w", "/work",
-                image, *argv]
+        return ["docker", "run", "--rm", *RUN_FLAGS, "--user", run_as(), "-v", f"{self.sandbox.resolve()}:/work",
+                "-w", "/work", image, *argv]
 
     def run(self, argv: list[str], timeout: int = RUN_TIMEOUT) -> Completed:
         try:

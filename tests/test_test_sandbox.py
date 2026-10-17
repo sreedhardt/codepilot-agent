@@ -30,6 +30,8 @@ def test_runs_are_isolated(tmp_path):
     for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges"):
         assert flag in joined
     assert f"{tmp_path.resolve()}:/work" in joined  # only the sandbox copy is mounted
+    user = command[command.index("--user") + 1]
+    assert not user.startswith("0:")  # never root inside the container
 
 
 @pytest.fixture(scope="module")

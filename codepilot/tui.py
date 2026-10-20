@@ -50,7 +50,7 @@ class NewTaskScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("New task: describe the change (first line becomes the title). Enter to start, Esc to cancel.")
+            yield Label("New task: describe the change in one line. Enter to start, Esc to cancel.")
             yield Input(placeholder="e.g. Add a /stats endpoint returning the number of active loans", id="task-input")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:

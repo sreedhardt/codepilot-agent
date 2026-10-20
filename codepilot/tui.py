@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Vertical
@@ -43,6 +44,24 @@ class PendingApproval:
     reply: dict | None = None
 
 
+class TaskInput(Input):
+    """A one-line box that keeps every line of a paste, joined with spaces.
+
+    Textual's Input keeps only the first line of pasted text, which silently dropped everything after a line
+    break in a pasted task.
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:
+        text = " ".join(event.text.split())
+        if text:
+            if self.selection.is_empty:
+                self.insert_text_at_cursor(text)
+            else:
+                self.replace(text, *self.selection)
+        event.prevent_default()  # Textual would also run Input's handler, which inserts the first line again
+        event.stop()
+
+
 class NewTaskScreen(ModalScreen[str | None]):
     """Free-form coding task, not tied to a GitHub issue."""
 
@@ -51,7 +70,7 @@ class NewTaskScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("New task: describe the change in one line. Enter to start, Esc to cancel.")
-            yield Input(placeholder="e.g. Add a /stats endpoint returning the number of active loans", id="task-input")
+            yield TaskInput(placeholder="e.g. Add a /stats endpoint returning the number of active loans", id="task-input")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value.strip() or None)
@@ -111,7 +130,8 @@ class CodePilotApp(App):
         self.issues: list = []
         self.skipped: set[int] = set()
         self.local_tasks: queue.Queue = queue.Queue()
-        self.next_local = LOCAL_TASK_START
+        # After every typed task already recorded, so a new session never overwrites an earlier one's record.
+        self.next_local = max([n + 1 for n in registry.records if n >= LOCAL_TASK_START], default=LOCAL_TASK_START)
         self.pending: PendingApproval | None = None
         self.stop = threading.Event()
         self.poll_now = threading.Event()

@@ -10,7 +10,7 @@ tasks straight into its terminal UI.
 It is built on [DeepAgents](https://github.com/langchain-ai/deepagents) and LangGraph, with a
 [Textual](https://textual.textualize.io/) TUI.
 
-**Demo video:** _link to be added_
+**Demo video:** [CodePilot walkthrough (6 min)](https://drive.google.com/file/d/1qUkNoGkmzY3e1U87lJ1GNVAm4n5bP9Eb/view?usp=sharing): issue polling, a full issue-to-PR run, a human approval and a blocked prompt injection.
 
 ![CodePilot TUI: issue feed, active task, agent logs and a pending approval](docs/tui.svg)
 

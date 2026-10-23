@@ -101,7 +101,11 @@ Where the money goes (same run):
 Every task is traced to LangSmith when `LANGSMITH_TRACING=true`, one trace per issue with each agent, subagent
 and tool call nested under it:
 
-<!-- LangSmith screenshot: docs/langsmith.png -->
+![LangSmith trace of issue 3: the five agents on a waterfall timeline, and the Orchestrator's delegation to the Repo Explorer](docs/langsmith.png)
+
+<sub>Issue 3 in LangSmith, filtered to the agents: the Repo Explorer, the Coder with its Test Agent nested inside, the
+Reviewer and the PR Agent, over 190 seconds. On the right, the Orchestrator's delegation to the Repo Explorer:
+file paths and the working memory, never file contents.</sub>
 
 The safety components are evaluated separately ([Evaluation](#evaluation)): the input rail, triage and the
 Reviewer each have their own labelled cases, and `tests/test_prompt_injection.py` runs a malicious issue through

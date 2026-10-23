@@ -371,6 +371,10 @@ Everything below can be re-run; `evals/results/` is git-ignored.
 | LangSmith experiments | `evals/langsmith_experiments.py` | The same cases as LangSmith datasets; rail 49/49, Reviewer 13/13 and triage holdout 16/16 in the first experiments |
 | Unit and integration tests | `uv run pytest` | 216 passing, plus one strict xfail that pins the host-mode limitation |
 
+The same labelled cases as LangSmith datasets, each with its experiment (`evals/langsmith_experiments.py`):
+
+![LangSmith datasets: codepilot-triage (48 examples), codepilot-review (13) and codepilot-rail (49), one experiment each](docs/langsmith-datasets.png)
+
 The Reviewer's cases (`evals/review_cases/`) are real fixes from evaluation runs that passed the hidden tests, one
 real incomplete fix, and copies of good fixes with a flaw inserted: debug output, a weakened or skipped test, an
 unrelated destructive script, and a comment telling the Reviewer to approve.
